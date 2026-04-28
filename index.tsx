@@ -82,6 +82,7 @@ function applyToastPatch() {
     (PatchedNotification as any).requestPermission = async () => "granted" as NotificationPermission;
 
     (window as any).Notification = PatchedNotification;
+    document.body.classList.add("np-toast-active");
 
     // Also intercept Electron's main-process Notification, which is the path
     // Discord uses for its own message notifications.
@@ -92,6 +93,7 @@ function removeToastPatch() {
     if (!OriginalNotification) return;
     window.Notification = OriginalNotification;
     OriginalNotification = null;
+    document.body.classList.remove("np-toast-active");
     Native.stopMainProcessPatch();
 }
 

@@ -12,3 +12,9 @@
     left: var(--np-left, unset) !important;
     right: var(--np-right, unset) !important;
 }
+
+/* When the custom BrowserWindow toast is active, suppress the Vencord in-app
+   overlay so only one notification surface fires per Discord message. */
+body.np-toast-active .vc-notification-root:not(.vc-notification-log-wrapper > .vc-notification-root) {
+    display: none !important;
+}
