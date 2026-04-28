@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.1.2 — 2026-04-27
+
+### Fixed
+- **Notification interception now works for real Discord messages** — the previous approach only patched `window.Notification` in the renderer, which Discord bypasses by routing its own message notifications through Electron's main-process `Notification` class. The fix patches `ElectronNotification.prototype.show` directly in the main process via `native.ts`, so the intercept fires regardless of which code path Discord uses.
+- **Blank custom toast content** — Discord on Windows constructs its notifications using the `toastXml` field (raw Windows Toast XML) rather than setting `title`/`body` directly on the `Notification` instance, leaving both properties as empty strings. Added `extractFromToastXml()` in `native.ts` to parse `<text>` elements from the XML as a fallback when `title` and `body` are both empty. HTML entities in the XML are unescaped before display.
+
+### Added
+- **Sound suppression** — new `suppressNotificationSound` toggle (off by default) mutes Discord's notification ping audio without affecting the visual notification. Implemented as a webpack patch on Discord's notification dispatch module (same module targeted by `onePingPerDM`): sets the `sound` property to `undefined` when the setting is enabled.
+- **Click-to-navigate** — new `redirectOnClick` toggle (on by default). When enabled, clicking the custom toast fires Discord's own `click` event on the intercepted `Notification` instance, which triggers Discord's registered handler and navigates to the source channel/message. Mechanically: the toast `onclick` navigates to `vc-np://click`; the main process intercepts this via `webContents.on('will-navigate')`, cancels the navigation, closes the window, and calls `notifInstance.emit('click')`. Auto-dismiss (timer expiry) does not trigger navigation.
+
+### Internal
+- Refactored `showToast` into an internal `showToastInternal(options, onClicked?)` that accepts an optional click callback, and a thin IPC-callable `showToast` wrapper that omits the callback (renderer cannot pass functions over IPC). The main-process patch calls `showToastInternal` directly with the click callback in scope.
+- Added `redirectOnClick` and template fields to `ToastConfig` so all necessary state is transferred from renderer settings to the main-process patch in a single IPC call.
+- All five toast-config settings (corner, offsets, duration, templates, redirectOnClick) now have `onChange` handlers that push updated config to the main process via `Native.updateMainProcessPatch()`.
+
+---
+
 ## v0.1.1 — 2026-04-27
 
 ### Added

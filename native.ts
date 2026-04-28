@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { BrowserWindow, screen } from "electron";
+import { BrowserWindow, Notification as ElectronNotification, screen } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
 export interface DisplayInfo {
@@ -25,6 +25,12 @@ export interface ToastOptions {
     duration: number;
 }
 
+export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
+    titleTemplate: string;
+    bodyTemplate: string;
+    redirectOnClick: boolean;
+};
+
 const TOAST_W = 320;
 const TOAST_H = 88;
 
@@ -38,11 +44,12 @@ function escapeHtml(s: string) {
         .replace(/"/g, "&quot;");
 }
 
-function buildHtml(title: string, body: string, icon: string, duration: number) {
+function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean) {
     const durationMs = duration * 1000;
     const iconContent = icon
         ? `<img class="icon" src="${escapeHtml(icon)}" onerror="this.style.display='none'" />`
         : DISCORD_SVG;
+    const onclick = clickable ? "location.href='vc-np://click'" : "window.close()";
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -58,7 +65,7 @@ body{font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-
 .bar{position:absolute;bottom:0;left:0;height:2px;background:#5865f2;border-radius:0 0 0 8px;animation:shrink ${durationMs}ms linear forwards}
 @keyframes shrink{from{width:100%}to{width:0%}}
 </style></head><body>
-<div class="toast" onclick="window.close()">
+<div class="toast" onclick="${onclick}">
   <div class="icon-wrap">${iconContent}</div>
   <div class="content">
     <div class="title">${escapeHtml(title)}</div>
@@ -68,6 +75,8 @@ body{font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-
 </div>
 </body></html>`;
 }
+
+// ── Displays & toast window ──────────────────────────────────────────────────
 
 export function getDisplays(_: IpcMainInvokeEvent): DisplayInfo[] {
     const primary = screen.getPrimaryDisplay();
@@ -79,7 +88,7 @@ export function getDisplays(_: IpcMainInvokeEvent): DisplayInfo[] {
     }));
 }
 
-export async function showToast(_: IpcMainInvokeEvent, options: ToastOptions): Promise<number> {
+async function showToastInternal(options: ToastOptions, onClicked?: () => void): Promise<number> {
     const displays = screen.getAllDisplays();
     const display = displays[options.displayIndex] ?? screen.getPrimaryDisplay();
     const { bounds } = display;
@@ -107,8 +116,19 @@ export async function showToast(_: IpcMainInvokeEvent, options: ToastOptions): P
         },
     });
 
-    const html = buildHtml(options.title, options.body, options.icon, options.duration);
+    const html = buildHtml(options.title, options.body, options.icon, options.duration, !!onClicked);
     await win.loadURL(`data:text/html;base64,${Buffer.from(html).toString("base64")}`);
+
+    // Intercept the navigation triggered by clicking the toast
+    if (onClicked) {
+        win.webContents.on("will-navigate", (event, url) => {
+            if (url.startsWith("vc-np://")) {
+                event.preventDefault();
+                win.close();
+                onClicked();
+            }
+        });
+    }
 
     if (options.duration > 0) {
         setTimeout(() => {
@@ -117,4 +137,80 @@ export async function showToast(_: IpcMainInvokeEvent, options: ToastOptions): P
     }
 
     return win.id;
+}
+
+// IPC-callable version — renderer cannot pass function callbacks
+export async function showToast(_: IpcMainInvokeEvent, options: ToastOptions): Promise<number> {
+    return showToastInternal(options);
+}
+
+// ── Main-process Notification interception ───────────────────────────────────
+
+function unescapeXml(s: string) {
+    return s
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, "\"")
+        .replace(/&apos;/g, "'");
+}
+
+// Discord on Windows uses toastXml for rich notifications, leaving title/body empty.
+// Extract visible text from <text> elements as a fallback.
+function extractFromToastXml(xml: string): { title: string; body: string; } {
+    const texts = [...xml.matchAll(/<text[^>]*>([^<]*)<\/text>/gi)]
+        .map(m => unescapeXml(m[1].trim()))
+        .filter(Boolean);
+    return { title: texts[0] ?? "", body: texts.slice(1).join(" ") };
+}
+
+let mainOriginalShow: (() => void) | null = null;
+let mainToastConfig: ToastConfig | null = null;
+
+export function startMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfig): void {
+    mainToastConfig = config;
+    if (mainOriginalShow) return;
+
+    mainOriginalShow = ElectronNotification.prototype.show;
+
+    ElectronNotification.prototype.show = function(this: InstanceType<typeof ElectronNotification>) {
+        if (!mainToastConfig) {
+            mainOriginalShow!.call(this);
+            return;
+        }
+
+        let title = this.title ?? "";
+        let body = this.body ?? "";
+
+        if (!title && !body) {
+            const xml = (this as any).toastXml as string | undefined;
+            if (xml) {
+                const extracted = extractFromToastXml(xml);
+                title = extracted.title;
+                body = extracted.body;
+            }
+        }
+
+        const cfg = mainToastConfig;
+        const notifInstance = this as any;
+        const onClicked = cfg.redirectOnClick ? () => notifInstance.emit("click") : undefined;
+
+        showToastInternal({
+            ...cfg,
+            title: cfg.titleTemplate.replace("{title}", title),
+            body: cfg.bodyTemplate.replace("{body}", body),
+            icon: "",
+        }, onClicked);
+    };
+}
+
+export function updateMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfig): void {
+    mainToastConfig = config;
+}
+
+export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
+    mainToastConfig = null;
+    if (!mainOriginalShow) return;
+    ElectronNotification.prototype.show = mainOriginalShow;
+    mainOriginalShow = null;
 }

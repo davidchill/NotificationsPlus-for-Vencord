@@ -12,7 +12,7 @@ import { PluginNative } from "@utils/types";
 import definePlugin, { OptionType } from "@utils/types";
 import { Button, React } from "@webpack/common";
 
-import type { DisplayInfo, ToastOptions } from "./native";
+import type { DisplayInfo, ToastConfig, ToastOptions } from "./native";
 
 const Native = VencordNative.pluginHelpers.NotificationsPlus as PluginNative<typeof import("./native")>;
 
@@ -32,6 +32,23 @@ function applyPosition() {
 // ── Native toast interception ────────────────────────────────────────────────
 
 let OriginalNotification: typeof window.Notification | null = null;
+
+function getToastConfig(): ToastConfig {
+    const {
+        toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
+        toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick,
+    } = settings.store;
+    return {
+        displayIndex: toastDisplayIndex,
+        corner: toastCorner as ToastOptions["corner"],
+        offsetX: toastOffsetX,
+        offsetY: toastOffsetY,
+        duration: toastDuration,
+        titleTemplate: toastTitleTemplate,
+        bodyTemplate: toastBodyTemplate,
+        redirectOnClick,
+    };
+}
 
 function applyToastPatch() {
     if (OriginalNotification) return;
@@ -64,12 +81,17 @@ function applyToastPatch() {
     (PatchedNotification as any).requestPermission = async () => "granted" as NotificationPermission;
 
     (window as any).Notification = PatchedNotification;
+
+    // Also intercept Electron's main-process Notification, which is the path
+    // Discord uses for its own message notifications.
+    Native.startMainProcessPatch(getToastConfig());
 }
 
 function removeToastPatch() {
     if (!OriginalNotification) return;
     window.Notification = OriginalNotification;
     OriginalNotification = null;
+    Native.stopMainProcessPatch();
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -100,6 +122,13 @@ const settings = definePluginSettings({
         onChange: applyPosition,
     },
 
+    // Sound suppression — standalone feature, no dependency on custom toast
+    suppressNotificationSound: {
+        description: "Mute Discord's notification sound",
+        type: OptionType.BOOLEAN,
+        default: false,
+    },
+
     // Custom native toast
     useCustomNativeToast: {
         description: "Replace native OS notifications with a custom positionable window",
@@ -107,10 +136,17 @@ const settings = definePluginSettings({
         default: false,
         onChange: (val: boolean) => val ? applyToastPatch() : removeToastPatch(),
     },
+    redirectOnClick: {
+        description: "Clicking the custom toast opens the message in Discord",
+        type: OptionType.BOOLEAN,
+        default: true,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
+    },
     toastDisplayIndex: {
         description: "Monitor to show custom notifications on — see monitor list below (0 = primary)",
         type: OptionType.NUMBER,
         default: 0,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastCorner: {
         description: "Corner for custom notifications",
@@ -121,31 +157,37 @@ const settings = definePluginSettings({
             { label: "Top Right", value: "top-right" },
             { label: "Top Left", value: "top-left" },
         ],
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastOffsetX: {
         description: "Horizontal distance from screen edge (px) — custom toast",
         type: OptionType.NUMBER,
         default: 16,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastOffsetY: {
         description: "Vertical distance from screen edge (px) — custom toast",
         type: OptionType.NUMBER,
         default: 16,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastDuration: {
         description: "Seconds before the toast auto-dismisses (0 = stays until clicked)",
         type: OptionType.NUMBER,
         default: 5,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastTitleTemplate: {
         description: "Title template — use {title} for the original notification title",
         type: OptionType.STRING,
         default: "{title}",
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastBodyTemplate: {
         description: "Body template — use {body} for the original notification body",
         type: OptionType.STRING,
         default: "{body}",
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastIconUrl: {
         description: "Icon URL override — leave blank to use Discord's logo",
@@ -161,6 +203,19 @@ export default definePlugin({
     description: "Adds position and offset control to Vencord's in-app notifications, and replaces native OS toasts with a fully positionable custom window",
     authors: [{ name: "David Rodriguez", id: 0n }],
     settings,
+
+    patches: [
+        {
+            // Same module that onePingPerDM patches — Discord's notification dispatch function.
+            // Nulling sound when suppressNotificationSound is enabled mutes the ping audio
+            // without affecting the visual notification path.
+            find: ".getDesktopType()===",
+            replacement: {
+                match: /sound:(\i\?\i:void 0,volume:\i,onClick)/,
+                replace: "sound:$self.settings.store.suppressNotificationSound?void 0:$1",
+            },
+        },
+    ],
 
     settingsAboutComponent() {
         const [displays, setDisplays] = React.useState<DisplayInfo[]>([]);
