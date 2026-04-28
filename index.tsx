@@ -36,7 +36,7 @@ let OriginalNotification: typeof window.Notification | null = null;
 function getToastConfig(): ToastConfig {
     const {
         toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
-        toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick,
+        toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick, toastIconUrl,
     } = settings.store;
     return {
         displayIndex: toastDisplayIndex,
@@ -47,6 +47,7 @@ function getToastConfig(): ToastConfig {
         titleTemplate: toastTitleTemplate,
         bodyTemplate: toastBodyTemplate,
         redirectOnClick,
+        iconUrl: toastIconUrl,
     };
 }
 

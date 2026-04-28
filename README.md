@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.2`
+`0.1.3`
 
 ## What it does
 
@@ -43,7 +43,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 | Duration | Number (seconds, 0 = until clicked) | 5 |
 | Title template | String — use `{title}` | `{title}` |
 | Body template | String — use `{body}` | `{body}` |
-| Icon URL | String (leave blank for Discord logo) | *(blank)* |
+| Icon URL | String (overrides sender avatar; leave blank to use avatar) | *(blank)* |
 
 The settings panel also lists all connected monitors with their index, label, and resolution so you always know which index to enter.
 
@@ -53,7 +53,7 @@ The settings panel also lists all connected monitors with their index, label, an
 On `start()`, the plugin writes four CSS custom properties (`--np-top`, `--np-bottom`, `--np-left`, `--np-right`) to `:root`. A single CSS rule in `style.css` applies them to `.vc-notification-root` with `!important`, overriding both Vencord's hardcoded `right: 1rem` and the inline `top`/`bottom` values set by `NotificationComponent` — no webpack patches required. Properties update live on every `onChange`.
 
 ### Custom native toast
-`native.ts` runs in Electron's main process. On enable, it patches `ElectronNotification.prototype.show` — the shared prototype method called by every Electron `Notification` instance — so the intercept fires regardless of when Discord created the object. Discord on Windows uses `toastXml` (raw Windows Toast XML) rather than setting `title`/`body` directly, so the plugin parses `<text>` elements from the XML as a fallback.
+`native.ts` runs in Electron's main process. On enable, it patches `ElectronNotification.prototype.show` — the shared prototype method called by every Electron `Notification` instance — so the intercept fires regardless of when Discord created the object. Discord on Windows uses `toastXml` (raw Windows Toast XML) rather than setting `title`/`body` directly, so the plugin parses `<text>` elements from the XML as a fallback. The sender's avatar is embedded in `toastXml` as a local temp file path; the plugin reads it immediately in the main process and converts it to a base64 data URI so it can be inlined into the toast HTML (a sandboxed `BrowserWindow` cannot load bare file paths from a `data:` page).
 
 `native.ts` exports:
 

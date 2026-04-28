@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.3 — 2026-04-28
+
+### Fixed
+- **Sender avatar now displays in custom toast** — the toast previously always showed the Discord logo. Discord embeds the sender's avatar as a temp PNG file path inside `toastXml` using single-quoted attributes (e.g. `src='C:\...\Temp\<uuid>.png'`). Two bugs prevented extraction: (1) the regex was matching double-quoted `src="..."` only, so it silently failed; (2) even if the path had been extracted, a sandboxed `BrowserWindow` loaded from a `data:` URI cannot access local `file://` paths. The fix corrects the regex to accept both quote styles and immediately reads the temp file in the main process, converting it to a base64 `data:image/...;base64,...` URI that is inlined into the toast HTML. Falls back to the Discord logo if no image is present. Works for DMs, server channel messages, and any other notification Discord fires.
+
+### Added
+- **`iconUrl` forwarded to main-process path** — the "Icon URL override" setting is now included in `ToastConfig` and respected by `startMainProcessPatch`, so a manual override takes priority over the extracted avatar on both the renderer and main-process notification paths.
+
+---
+
 ## v0.1.2 — 2026-04-27
 
 ### Fixed

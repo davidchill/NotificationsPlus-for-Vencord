@@ -29,6 +29,7 @@ export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
     titleTemplate: string;
     bodyTemplate: string;
     redirectOnClick: boolean;
+    iconUrl: string;
 };
 
 const TOAST_W = 320;
@@ -164,6 +165,31 @@ function extractFromToastXml(xml: string): { title: string; body: string; } {
     return { title: texts[0] ?? "", body: texts.slice(1).join(" ") };
 }
 
+// Extract the avatar/icon path from the appLogoOverride image element in toastXml.
+// Discord uses single-quoted attributes, so the regex accepts both quote styles.
+function extractImageFromToastXml(xml: string): string {
+    const match = xml.match(/<image[^>]+src=['"]([^'"]+)['"]/i);
+    return match ? match[1] : "";
+}
+
+// Discord saves the avatar as a temp PNG before firing the notification.
+// A sandboxed BrowserWindow can't load a bare file path from a data: page,
+// so we read it immediately and return a base64 data URI instead.
+function iconPathToDataUrl(src: string): string {
+    if (!src) return "";
+    if (src.startsWith("data:") || src.startsWith("http://") || src.startsWith("https://")) return src;
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require("fs") as typeof import("fs");
+        const buf = fs.readFileSync(src);
+        const ext = src.split(".").pop()?.toLowerCase() ?? "png";
+        const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+        return `data:${mime};base64,${buf.toString("base64")}`;
+    } catch {
+        return "";
+    }
+}
+
 let mainOriginalShow: (() => void) | null = null;
 let mainToastConfig: ToastConfig | null = null;
 
@@ -181,14 +207,19 @@ export function startMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfig
 
         let title = this.title ?? "";
         let body = this.body ?? "";
+        let avatarIcon = "";
 
-        if (!title && !body) {
-            const xml = (this as any).toastXml as string | undefined;
-            if (xml) {
+        const xml = (this as any).toastXml as string | undefined;
+        if (xml) {
+            if (!title && !body) {
                 const extracted = extractFromToastXml(xml);
                 title = extracted.title;
                 body = extracted.body;
             }
+            // Discord saves the avatar to a temp file and embeds the path in toastXml.
+            // Convert it to a base64 data URI so it loads in the sandboxed BrowserWindow.
+            const rawPath = extractImageFromToastXml(xml);
+            if (rawPath) avatarIcon = iconPathToDataUrl(rawPath);
         }
 
         const cfg = mainToastConfig;
@@ -199,7 +230,7 @@ export function startMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfig
             ...cfg,
             title: cfg.titleTemplate.replace("{title}", title),
             body: cfg.bodyTemplate.replace("{body}", body),
-            icon: "",
+            icon: cfg.iconUrl || avatarIcon,
         }, onClicked);
     };
 }
