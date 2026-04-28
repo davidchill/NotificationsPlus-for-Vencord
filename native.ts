@@ -52,7 +52,9 @@ function buildHtml(title: string, body: string, icon: string, duration: number, 
         : DISCORD_SVG;
     const onclick = clickable ? "location.href='vc-np://click'" : "window.close()";
 
-    // Discord notification title format: "Username (#channel-name, ServerName)"
+    // Discord notification title format: "Username (#channel-name, Category)"
+    // Confirmed via toastXml inspection: only 2 text elements exist — title and body.
+    // The server name is not present anywhere in the notification data Discord sends.
     // Usernames may contain their own paren groups (e.g. "astolfo 💕 (server kitten)"),
     // so scan for paren groups and take the first one whose content starts with "#".
     const raw = title.trim();
@@ -66,17 +68,17 @@ function buildHtml(title: string, body: string, icon: string, duration: number, 
         }
     }
     let displayName: string;
-    let serverChannel: string;
+    let channelDisplay: string;
     if (channelMatch) {
         displayName = raw.slice(0, channelMatch.index).trim();
         const parts = channelMatch[1].split(",").map(s => s.trim()).filter(Boolean);
-        const channel = parts[0] ?? "";
-        const server = parts.slice(1).join(", ");
-        serverChannel = server && channel ? `${server} | ${channel}` : (server || channel);
+        const channelName = parts[0] ?? "";
+        const category = parts[1] ?? "";
+        channelDisplay = category ? `${category} | ${channelName}` : channelName;
     } else {
-        // DM or plain notification — no "(#channel, Server)" context found.
+        // DM or plain notification — no "(#channel, Category)" context found.
         displayName = raw;
-        serverChannel = "";
+        channelDisplay = "";
     }
     const messageText = body;
 
@@ -92,7 +94,7 @@ body{font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-
 .icon{width:44px;height:44px;object-fit:cover;border-radius:50%}
 .content{flex:1;overflow:hidden;padding-top:2px}
 .title{font-size:14px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
-.subtitle{font-size:12px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
+.channel{font-size:12px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
 .body{font-size:13px;line-height:1.4;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .bar{position:absolute;bottom:0;left:0;height:3px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards}
 @keyframes shrink{from{width:100%}to{width:0%}}
@@ -101,7 +103,7 @@ body{font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-
   <div class="icon-wrap">${iconContent}</div>
   <div class="content">
     <div class="title">${escapeHtml(displayName)}</div>
-    ${serverChannel ? `<div class="subtitle">${escapeHtml(serverChannel)}</div>` : ""}
+    ${channelDisplay ? `<div class="channel">${escapeHtml(channelDisplay)}</div>` : ""}
     <div class="body">${escapeHtml(messageText)}</div>
   </div>
   ${duration > 0 ? '<div class="bar"></div>' : ""}

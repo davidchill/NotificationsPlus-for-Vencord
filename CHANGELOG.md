@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.5 — 2026-04-28
+
+### Fixed
+- **Toast layout: channel category and channel name now appear on one line** — Discord's notification title format is `"Username (#channel-name, Category)"` where the second comma-part is the channel *category* (e.g. `GTA`), not the server name. The previous code treated `parts[1]` as the server name and rendered it on its own separate line above the channel. It now correctly joins them as `Category | #channel-name` on a single line with accent styling. Confirmed by inspecting the live `toastXml` payload: Discord's notification contains exactly two `<text>` elements — the full title string and the message body. The server name is not present anywhere in the notification data Discord sends to the OS.
+
+---
+
 ## v0.1.4 — 2026-04-28
 
 ### Fixed
