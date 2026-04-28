@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.4 — 2026-04-28
+
+### Fixed
+- **Title parsing now works for all usernames** — Discord wraps every text segment inside `toastXml` `<text>` elements with Unicode bidi control characters (U+2068 First Strong Isolate / U+2069 Pop Directional Isolate) for RTL/LTR text handling. These invisible characters preceded the `#` in channel names (e.g. the actual content is `⁨#channel⁩`), causing `startsWith("#")` checks and `indexOf(" (#")` searches to silently fail. The result was that the formatted `Username / Server | Channel / Message` layout never applied — the raw unformatted title was displayed instead. Fixed by adding `stripBidi()` in `native.ts`, which strips all bidi and zero-width control characters from extracted text before any parsing occurs. Applied to both the `extractFromToastXml` path and to `this.title` / `this.body` on the `ElectronNotification` instance. Users with usernames containing parentheses (e.g. "astolfo 💕 (server kitten)") continue to parse correctly — the fix targets the channel-group paren, not any paren.
+- **Removed temporary diagnostic** — a debug block that was appending raw notification titles to `%TEMP%\vencord-np-debug.txt` (added to diagnose the bidi issue) has been removed.
+
+---
+
 ## v0.1.3 — 2026-04-28
 
 ### Fixed

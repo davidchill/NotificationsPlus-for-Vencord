@@ -32,10 +32,10 @@ export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
     iconUrl: string;
 };
 
-const TOAST_W = 320;
-const TOAST_H = 88;
+const TOAST_W = 345;
+const TOAST_H = 113;
 
-const DISCORD_SVG = `<svg viewBox="0 0 24 24" fill="white" width="20" height="20"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>`;
+const DISCORD_SVG = `<svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>`;
 
 function escapeHtml(s: string) {
     return s
@@ -52,25 +52,57 @@ function buildHtml(title: string, body: string, icon: string, duration: number, 
         : DISCORD_SVG;
     const onclick = clickable ? "location.href='vc-np://click'" : "window.close()";
 
+    // Discord notification title format: "Username (#channel-name, ServerName)"
+    // Usernames may contain their own paren groups (e.g. "astolfo 💕 (server kitten)"),
+    // so scan for paren groups and take the first one whose content starts with "#".
+    const raw = title.trim();
+    const parenRe = /\s+\(([^)]+)\)/g;
+    let parenMatch: RegExpExecArray | null;
+    let channelMatch: RegExpExecArray | null = null;
+    while ((parenMatch = parenRe.exec(raw)) !== null) {
+        if (parenMatch[1].trimStart().startsWith("#")) {
+            channelMatch = parenMatch;
+            break;
+        }
+    }
+    let displayName: string;
+    let serverChannel: string;
+    if (channelMatch) {
+        displayName = raw.slice(0, channelMatch.index).trim();
+        const parts = channelMatch[1].split(",").map(s => s.trim()).filter(Boolean);
+        const channel = parts[0] ?? "";
+        const server = parts.slice(1).join(", ");
+        serverChannel = server && channel ? `${server} | ${channel}` : (server || channel);
+    } else {
+        // DM or plain notification — no "(#channel, Server)" context found.
+        displayName = raw;
+        serverChannel = "";
+    }
+    const messageText = body;
+
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:100%;background:transparent;overflow:hidden}
 body{font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased}
-.toast{background:#2b2d31;color:#dbdee1;border-radius:8px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;width:100%;height:100%;box-shadow:0 8px 24px rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.06);position:relative;cursor:pointer;overflow:hidden;user-select:none}
-.toast:hover{background:#32353b}
-.icon-wrap{flex-shrink:0;width:36px;height:36px;border-radius:50%;background:#5865f2;display:flex;align-items:center;justify-content:center;overflow:hidden}
-.icon{width:36px;height:36px;object-fit:cover;border-radius:50%}
+:root{--bg:#2b2d31;--bg-hover:#32353b;--title:#f2f3f5;--text:#b5bac1;--border:rgba(88,101,242,.35);--shadow:0 16px 48px rgba(0,0,0,.65),0 0 0 1px var(--border);--accent:#5865f2}
+@media(prefers-color-scheme:light){:root{--bg:#ffffff;--bg-hover:#f2f3f5;--title:#060607;--text:#4e5058;--border:rgba(88,101,242,.3);--shadow:0 8px 32px rgba(0,0,0,.18),0 0 0 1px var(--border)}}
+.toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;height:100%;box-shadow:var(--shadow);position:relative;cursor:pointer;overflow:hidden;user-select:none}
+.toast:hover{background:var(--bg-hover)}
+.icon-wrap{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:#5865f2;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.icon{width:44px;height:44px;object-fit:cover;border-radius:50%}
 .content{flex:1;overflow:hidden;padding-top:2px}
-.title{font-size:13px;font-weight:600;color:#f2f3f5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
-.body{font-size:13px;line-height:1.4;color:#b5bac1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.bar{position:absolute;bottom:0;left:0;height:2px;background:#5865f2;border-radius:0 0 0 8px;animation:shrink ${durationMs}ms linear forwards}
+.title{font-size:14px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.subtitle{font-size:12px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
+.body{font-size:13px;line-height:1.4;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bar{position:absolute;bottom:0;left:0;height:3px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards}
 @keyframes shrink{from{width:100%}to{width:0%}}
 </style></head><body>
 <div class="toast" onclick="${onclick}">
   <div class="icon-wrap">${iconContent}</div>
   <div class="content">
-    <div class="title">${escapeHtml(title)}</div>
-    <div class="body">${escapeHtml(body)}</div>
+    <div class="title">${escapeHtml(displayName)}</div>
+    ${serverChannel ? `<div class="subtitle">${escapeHtml(serverChannel)}</div>` : ""}
+    <div class="body">${escapeHtml(messageText)}</div>
   </div>
   ${duration > 0 ? '<div class="bar"></div>' : ""}
 </div>
@@ -156,11 +188,23 @@ function unescapeXml(s: string) {
         .replace(/&apos;/g, "'");
 }
 
+// Discord wraps every text segment in Unicode bidi control characters (U+2068 FSI / U+2069 PDI)
+// for RTL/LTR handling. Strip them so "#channel" comparisons work correctly.
+function stripBidi(s: string): string {
+    let out = "";
+    for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if ((c >= 0x200B && c <= 0x200F) || (c >= 0x2028 && c <= 0x202E) || (c >= 0x2060 && c <= 0x2069) || c === 0xFEFF) continue;
+        out += s[i];
+    }
+    return out;
+}
+
 // Discord on Windows uses toastXml for rich notifications, leaving title/body empty.
 // Extract visible text from <text> elements as a fallback.
 function extractFromToastXml(xml: string): { title: string; body: string; } {
     const texts = [...xml.matchAll(/<text[^>]*>([^<]*)<\/text>/gi)]
-        .map(m => unescapeXml(m[1].trim()))
+        .map(m => stripBidi(unescapeXml(m[1].trim())))
         .filter(Boolean);
     return { title: texts[0] ?? "", body: texts.slice(1).join(" ") };
 }
@@ -205,8 +249,8 @@ export function startMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfig
             return;
         }
 
-        let title = this.title ?? "";
-        let body = this.body ?? "";
+        let title = stripBidi(this.title ?? "");
+        let body = stripBidi(this.body ?? "");
         let avatarIcon = "";
 
         const xml = (this as any).toastXml as string | undefined;
