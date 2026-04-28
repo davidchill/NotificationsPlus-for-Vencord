@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.7 — 2026-04-28
+
+### Fixed
+- **Rapid notifications no longer layer on top of each other** — when a new custom toast arrives while one is already visible in the same corner on the same display, the previous window is now closed before the new one appears ("bump and replace"). Previously, each call to `showToastInternal` created an independent `BrowserWindow` with no awareness of other open toasts, so rapid-fire messages stacked at the exact same screen coordinates.
+- **Async race in bump-and-replace registration** — the initial implementation registered the new window in the `activeToasts` map only after two `await` calls (`loadURL` + `executeJavaScript`). A second notification arriving during those ~50–100 ms would find the map empty, skip the close step, and produce a second overlapping window anyway. The window is now registered in the map synchronously immediately after `new BrowserWindow()`, before any `await`.
+
+### Internal
+- `activeToasts: Map<string, BrowserWindow>` added to `native.ts`, keyed by `"${displayIndex}-${corner}"`. Each entry holds the one currently visible toast for that corner/display combination.
+- `stopMainProcessPatch()` now closes all windows in `activeToasts` and clears the map when the plugin is disabled, preventing orphaned windows.
+
+---
+
 ## v0.1.6 — 2026-04-28
 
 ### Added

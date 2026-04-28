@@ -143,6 +143,10 @@ export function getDisplays(_: IpcMainInvokeEvent): DisplayInfo[] {
 }
 
 async function showToastInternal(options: ToastOptions, onClicked?: () => void): Promise<number> {
+    const toastKey = `${options.displayIndex}-${options.corner}`;
+    const existing = activeToasts.get(toastKey);
+    if (existing && !existing.isDestroyed()) existing.close();
+
     const displays = screen.getAllDisplays();
     const display = displays[options.displayIndex] ?? screen.getPrimaryDisplay();
     const { bounds } = display;
@@ -170,6 +174,11 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
             sandbox: true,
         },
     });
+
+    // Register immediately — before any awaits — so that a rapid second notification
+    // finds this window in the map and closes it rather than layering on top.
+    activeToasts.set(toastKey, win);
+    win.on("closed", () => { if (activeToasts.get(toastKey) === win) activeToasts.delete(toastKey); });
 
     const html = buildHtml(options.title, options.body, options.icon, options.duration, !!onClicked, options.font, options.titleSize, options.channelSize, options.bodySize);
     await win.loadURL(`data:text/html;base64,${Buffer.from(html).toString("base64")}`);
@@ -273,6 +282,9 @@ function iconPathToDataUrl(src: string): string {
     }
 }
 
+// Tracks the one visible toast per display+corner. Keyed by "${displayIndex}-${corner}".
+const activeToasts = new Map<string, BrowserWindow>();
+
 let mainOriginalShow: (() => void) | null = null;
 let mainToastConfig: ToastConfig | null = null;
 
@@ -327,4 +339,6 @@ export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
     if (!mainOriginalShow) return;
     ElectronNotification.prototype.show = mainOriginalShow;
     mainOriginalShow = null;
+    for (const win of activeToasts.values()) { if (!win.isDestroyed()) win.close(); }
+    activeToasts.clear();
 }

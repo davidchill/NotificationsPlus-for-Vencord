@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.6`
+`0.1.7`
 
 ## What it does
 
@@ -61,6 +61,8 @@ On `start()`, the plugin writes four CSS custom properties (`--np-top`, `--np-bo
 
 The toast window is created hidden (`show: false`) at a minimum height of 113 px. After the HTML loads, the plugin measures `document.documentElement.scrollHeight` via `webContents.executeJavaScript` and resizes the window to fit the content (capped at 300 px), re-anchoring the `y` position for bottom-corner toasts before calling `win.show()`. This means the window always appears at its final size with no visible resize flash. Font selection injects a Google Fonts `<link>` tag into the toast HTML at render time; system font choices (Segoe UI, Arial) skip the network request entirely.
 
+**Multiple notifications (bump and replace):** Only one custom toast is ever visible per corner/display combination at a time. When a new notification arrives while a toast is showing, the existing window is closed immediately and the new one takes its place. This prevents notifications from layering on top of each other without the risk of stacking off-screen. Tracked internally via an `activeToasts` map keyed by `"${displayIndex}-${corner}"`.
+
 `native.ts` exports:
 
 - `getDisplays()` — calls `electron.screen.getAllDisplays()` and returns display metadata
@@ -82,6 +84,5 @@ A webpack patch on Discord's notification dispatch module sets the `sound` prope
 
 ## Planned features
 
-- Notification stacking (show multiple custom toasts at once instead of queuing)
 - Custom toast width and opacity settings
 - Per-monitor positioning on multi-display setups (in-app overlay)
