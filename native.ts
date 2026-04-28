@@ -23,6 +23,10 @@ export interface ToastOptions {
     offsetX: number;
     offsetY: number;
     duration: number;
+    font: string;
+    titleSize: number;
+    channelSize: number;
+    bodySize: number;
 }
 
 export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
@@ -33,7 +37,18 @@ export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
 };
 
 const TOAST_W = 345;
-const TOAST_H = 113;
+const TOAST_MIN_H = 113;
+const TOAST_MAX_H = 300;
+
+// Google Fonts that need a <link> injection. System fonts (Arial, Segoe UI, etc.) are not listed here.
+const GOOGLE_FONTS: Record<string, string> = {
+    "Nunito": "Nunito:wght@400;500;600;700",
+    "Inter": "Inter:wght@400;500;600;700",
+    "Roboto": "Roboto:wght@400;500;700",
+    "Poppins": "Poppins:wght@400;500;600;700",
+    "Open Sans": "Open+Sans:wght@400;500;600;700",
+    "Lato": "Lato:wght@400;700",
+};
 
 const DISCORD_SVG = `<svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>`;
 
@@ -45,12 +60,16 @@ function escapeHtml(s: string) {
         .replace(/"/g, "&quot;");
 }
 
-function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean) {
+function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean, font: string, titleSize: number, channelSize: number, bodySize: number) {
     const durationMs = duration * 1000;
     const iconContent = icon
         ? `<img class="icon" src="${escapeHtml(icon)}" onerror="this.style.display='none'" />`
         : DISCORD_SVG;
     const onclick = clickable ? "location.href='vc-np://click'" : "window.close()";
+    const fontQuery = GOOGLE_FONTS[font];
+    const fontLink = fontQuery
+        ? `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=${fontQuery}&display=swap">`
+        : "";
 
     // Discord notification title format: "Username (#channel-name, Category)"
     // Confirmed via toastXml inspection: only 2 text elements exist — title and body.
@@ -82,20 +101,20 @@ function buildHtml(title: string, body: string, icon: string, duration: number, 
     }
     const messageText = body;
 
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">${fontLink}<style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:transparent;overflow:hidden}
-body{font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased}
+html,body{width:100%;height:auto;background:transparent;overflow:hidden}
+body{font-family:"${font}","Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased}
 :root{--bg:#2b2d31;--bg-hover:#32353b;--title:#f2f3f5;--text:#b5bac1;--border:rgba(88,101,242,.35);--shadow:0 16px 48px rgba(0,0,0,.65),0 0 0 1px var(--border);--accent:#5865f2}
 @media(prefers-color-scheme:light){:root{--bg:#ffffff;--bg-hover:#f2f3f5;--title:#060607;--text:#4e5058;--border:rgba(88,101,242,.3);--shadow:0 8px 32px rgba(0,0,0,.18),0 0 0 1px var(--border)}}
-.toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;height:100%;box-shadow:var(--shadow);position:relative;cursor:pointer;overflow:hidden;user-select:none}
+.toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;min-height:${TOAST_MIN_H}px;box-shadow:var(--shadow);position:relative;cursor:pointer;overflow:hidden;user-select:none}
 .toast:hover{background:var(--bg-hover)}
 .icon-wrap{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:#5865f2;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .icon{width:44px;height:44px;object-fit:cover;border-radius:50%}
-.content{flex:1;overflow:hidden;padding-top:2px}
-.title{font-size:14px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
-.channel{font-size:12px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
-.body{font-size:13px;line-height:1.4;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.content{flex:1;min-width:0;padding-top:2px}
+.title{font-size:${titleSize}px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.channel{font-size:${channelSize}px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
+.body{font-size:${bodySize}px;line-height:1.4;color:var(--text);overflow-wrap:break-word;word-break:break-word}
 .bar{position:absolute;bottom:0;left:0;height:3px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards}
 @keyframes shrink{from{width:100%}to{width:0%}}
 </style></head><body>
@@ -131,12 +150,13 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     const isRight = options.corner.endsWith("right");
     const isBottom = options.corner.startsWith("bottom");
     const x = Math.round(isRight ? bounds.x + bounds.width - TOAST_W - options.offsetX : bounds.x + options.offsetX);
-    const y = Math.round(isBottom ? bounds.y + bounds.height - TOAST_H - options.offsetY : bounds.y + options.offsetY);
+    const y = Math.round(isBottom ? bounds.y + bounds.height - TOAST_MIN_H - options.offsetY : bounds.y + options.offsetY);
 
     const win = new BrowserWindow({
         x, y,
         width: TOAST_W,
-        height: TOAST_H,
+        height: TOAST_MIN_H,
+        show: false,
         frame: false,
         alwaysOnTop: true,
         transparent: true,
@@ -151,8 +171,25 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         },
     });
 
-    const html = buildHtml(options.title, options.body, options.icon, options.duration, !!onClicked);
+    const html = buildHtml(options.title, options.body, options.icon, options.duration, !!onClicked, options.font, options.titleSize, options.channelSize, options.bodySize);
     await win.loadURL(`data:text/html;base64,${Buffer.from(html).toString("base64")}`);
+
+    // Measure rendered content height and expand the window to fit, then show.
+    // We defer show until after resize so the window never flashes at the wrong size.
+    try {
+        const contentH: number = await win.webContents.executeJavaScript(
+            "document.documentElement.scrollHeight"
+        );
+        const newH = Math.max(TOAST_MIN_H, Math.min(contentH, TOAST_MAX_H));
+        if (newH !== TOAST_MIN_H) {
+            const newY = isBottom
+                ? Math.round(bounds.y + bounds.height - newH - options.offsetY)
+                : y;
+            win.setBounds({ x, y: newY, width: TOAST_W, height: newH });
+        }
+    } catch { /* window was closed before measurement completed */ }
+
+    if (!win.isDestroyed()) win.show();
 
     // Intercept the navigation triggered by clicking the toast
     if (onClicked) {

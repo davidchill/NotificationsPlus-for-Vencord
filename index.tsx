@@ -37,6 +37,7 @@ function getToastConfig(): ToastConfig {
     const {
         toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
         toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick, toastIconUrl,
+        toastFont, toastTitleSize, toastChannelSize, toastBodySize,
     } = settings.store;
     return {
         displayIndex: toastDisplayIndex,
@@ -48,6 +49,10 @@ function getToastConfig(): ToastConfig {
         bodyTemplate: toastBodyTemplate,
         redirectOnClick,
         iconUrl: toastIconUrl,
+        font: toastFont,
+        titleSize: toastTitleSize,
+        channelSize: toastChannelSize,
+        bodySize: toastBodySize,
     };
 }
 
@@ -59,6 +64,7 @@ function applyToastPatch() {
         const {
             toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
             toastDuration, toastTitleTemplate, toastBodyTemplate, toastIconUrl,
+            toastFont, toastTitleSize, toastChannelSize, toastBodySize,
         } = settings.store;
 
         Native.showToast({
@@ -70,6 +76,10 @@ function applyToastPatch() {
             offsetX: toastOffsetX,
             offsetY: toastOffsetY,
             duration: toastDuration,
+            font: toastFont,
+            titleSize: toastTitleSize,
+            channelSize: toastChannelSize,
+            bodySize: toastBodySize,
         });
 
         return { onclick: null, onclose: null, close() { } };
@@ -196,6 +206,39 @@ const settings = definePluginSettings({
         description: "Icon URL override — leave blank to use Discord's logo",
         type: OptionType.STRING,
         default: "",
+    },
+    toastFont: {
+        description: "Font for the custom toast",
+        type: OptionType.SELECT,
+        options: [
+            { label: "Nunito", value: "Nunito", default: true },
+            { label: "Inter", value: "Inter" },
+            { label: "Poppins", value: "Poppins" },
+            { label: "Roboto", value: "Roboto" },
+            { label: "Open Sans", value: "Open Sans" },
+            { label: "Lato", value: "Lato" },
+            { label: "Segoe UI (system)", value: "Segoe UI" },
+            { label: "Arial (system)", value: "Arial" },
+        ],
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
+    },
+    toastTitleSize: {
+        description: "Title font size (px)",
+        type: OptionType.NUMBER,
+        default: 14,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
+    },
+    toastChannelSize: {
+        description: "Channel line font size (px)",
+        type: OptionType.NUMBER,
+        default: 12,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
+    },
+    toastBodySize: {
+        description: "Message body font size (px)",
+        type: OptionType.NUMBER,
+        default: 13,
+        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
 });
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.6 — 2026-04-28
+
+### Added
+- **Vertically dynamic toast height** — the custom toast now expands to fit the full message body rather than clipping at a fixed height. Minimum height is 113 px (unchanged from before); maximum is 300 px. Implemented by creating the `BrowserWindow` with `show: false`, loading the HTML, measuring `document.documentElement.scrollHeight` via `webContents.executeJavaScript`, calling `win.setBounds()` to resize (re-anchoring `y` for bottom-corner toasts so it stays flush to the edge), then calling `win.show()`. The window never flashes at the wrong size.
+- **Message body no longer truncated** — removed `-webkit-line-clamp: 2` from the `.body` CSS rule; body text now wraps freely with `overflow-wrap: break-word`.
+- **Font selection setting** — new "Toast Font" SELECT setting with 8 options: Nunito (default), Inter, Poppins, Roboto, Open Sans, Lato, Segoe UI (system), Arial (system). Google Fonts are loaded via a `<link>` tag injected into the toast HTML at render time; system fonts skip the network request entirely. Chromium's shared session cache means Google Fonts are warm after the first notification.
+- **Per-element font size settings** — three new NUMBER settings: "Title font size" (default 14 px), "Channel line font size" (default 12 px), "Message body font size" (default 13 px). All three call `updateMainProcessPatch` on change and take effect on the next notification.
+
+### Internal
+- `TOAST_H` renamed to `TOAST_MIN_H`; `TOAST_MAX_H = 300` added as a new constant.
+- `GOOGLE_FONTS` map added to `native.ts`, keying font name to Google Fonts query string for dynamic `<link>` injection.
+- `ToastOptions` (and by extension `ToastConfig`) now carries `font`, `titleSize`, `channelSize`, `bodySize`.
+- `buildHtml()` signature extended to accept all four new params.
+
+---
+
 ## v0.1.5 — 2026-04-28
 
 ### Fixed

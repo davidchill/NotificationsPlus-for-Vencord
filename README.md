@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.5`
+`0.1.6`
 
 ## What it does
 
@@ -44,6 +44,10 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 | Title template | String — use `{title}` | `{title}` |
 | Body template | String — use `{body}` | `{body}` |
 | Icon URL | String (overrides sender avatar; leave blank to use avatar) | *(blank)* |
+| Font | Nunito, Inter, Poppins, Roboto, Open Sans, Lato, Segoe UI, Arial | Nunito |
+| Title font size | Number (px) | 14 |
+| Channel line font size | Number (px) | 12 |
+| Message body font size | Number (px) | 13 |
 
 The settings panel also lists all connected monitors with their index, label, and resolution so you always know which index to enter.
 
@@ -54,6 +58,8 @@ On `start()`, the plugin writes four CSS custom properties (`--np-top`, `--np-bo
 
 ### Custom native toast
 `native.ts` runs in Electron's main process. On enable, it patches `ElectronNotification.prototype.show` — the shared prototype method called by every Electron `Notification` instance — so the intercept fires regardless of when Discord created the object. Discord on Windows uses `toastXml` (raw Windows Toast XML) rather than setting `title`/`body` directly, so the plugin parses `<text>` elements from the XML as a fallback. The `toastXml` contains exactly two `<text>` elements: `[0]` is the notification title in the format `"Username (#channel-name, Category)"` and `[1]` is the message body. The server name is not included anywhere in Discord's notification data. The custom toast displays: **Username** / **Category | #channel** / **Message**. The sender's avatar is embedded in `toastXml` as a local temp file path; the plugin reads it immediately in the main process and converts it to a base64 data URI so it can be inlined into the toast HTML (a sandboxed `BrowserWindow` cannot load bare file paths from a `data:` page).
+
+The toast window is created hidden (`show: false`) at a minimum height of 113 px. After the HTML loads, the plugin measures `document.documentElement.scrollHeight` via `webContents.executeJavaScript` and resizes the window to fit the content (capped at 300 px), re-anchoring the `y` position for bottom-corner toasts before calling `win.show()`. This means the window always appears at its final size with no visible resize flash. Font selection injects a Google Fonts `<link>` tag into the toast HTML at render time; system font choices (Segoe UI, Arial) skip the network request entirely.
 
 `native.ts` exports:
 
