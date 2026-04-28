@@ -1,0 +1,14 @@
+/*
+ * NotificationsPlus — position overrides
+ *
+ * !important beats inline styles, so these CSS variables override both the
+ * hardcoded `right: 1rem` from Vencord's base stylesheet AND the top/bottom
+ * inline styles applied by NotificationComponent — no webpack patch needed.
+ */
+
+.vc-notification-root:not(.vc-notification-log-wrapper > .vc-notification-root) {
+    top: var(--np-top, unset) !important;
+    bottom: var(--np-bottom, unset) !important;
+    left: var(--np-left, unset) !important;
+    right: var(--np-right, unset) !important;
+}
