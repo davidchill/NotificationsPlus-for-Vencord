@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.8`
+`0.1.9`
 
 ## What it does
 
@@ -68,6 +68,8 @@ The toast window is created hidden (`show: false`) at a minimum height of 113 px
 - `getDisplays()` — calls `electron.screen.getAllDisplays()` and returns display metadata
 - `showToast(options)` — IPC-callable; creates a `BrowserWindow` (frameless, transparent, always-on-top, `focusable: false`) at exact pixel coordinates computed from the target display's bounds plus corner and offsets; loads an inline HTML toast via base64 data URI; auto-closes after the configured duration
 - `startMainProcessPatch(config)` / `updateMainProcessPatch(config)` / `stopMainProcessPatch()` — manage the prototype patch and keep toast config in sync with renderer settings
+
+**Body text formatting:** Before rendering, the message body is processed for inline highlights. `@mention` patterns are rendered in the accent color. `https://` and `http://` URLs are rendered in the accent color with an underline. Both patterns are resolved in a single regex pass (URLs matched first) so an `@` inside a URL is never double-processed.
 
 **Click-to-navigate:** When `redirectOnClick` is on, the toast's `onclick` navigates to `vc-np://click` instead of calling `window.close()`. The main process intercepts this via `webContents.on('will-navigate')`, cancels the navigation, closes the window, and calls `notifInstance.emit('click')` on the original `Notification` instance — triggering Discord's own registered handler, which navigates to the source channel and message.
 

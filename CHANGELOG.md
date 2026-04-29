@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.9 — 2026-04-28
+
+### Added
+- **@ mention highlighting** — `@username` patterns in the toast body now render in the same blurple accent color (`#5865f2`) used by the Category | Channel line, making mentions visually distinct from regular message text.
+- **URL styling** — `https://` and `http://` URLs in the toast body are styled in the same accent color with an underline. Visual only — clicking the URL triggers the standard toast click handler (redirect to message or dismiss), not a browser open.
+
+---
+
 ## v0.1.8 — 2026-04-28
 
 ### Changed

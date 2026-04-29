@@ -60,6 +60,15 @@ function escapeHtml(s: string) {
         .replace(/"/g, "&quot;");
 }
 
+function formatBody(text: string): string {
+    return escapeHtml(text).replace(
+        /(https?:\/\/[^\s]+)|(@\S+)/g,
+        (_, url, mention) => url
+            ? `<span class="link">${url}</span>`
+            : `<span class="mention">${mention}</span>`
+    );
+}
+
 function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean, font: string, titleSize: number, channelSize: number, bodySize: number) {
     const durationMs = duration * 1000;
     const iconContent = icon
@@ -115,6 +124,7 @@ body{font-family:"${font}","Segoe UI",-apple-system,BlinkMacSystemFont,sans-seri
 .title{font-size:${titleSize}px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
 .channel{font-size:${channelSize}px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
 .body{font-size:${bodySize}px;line-height:1.4;color:var(--text);overflow-wrap:break-word;word-break:break-word}
+.mention{color:var(--accent)}.link{color:var(--accent);text-decoration:underline}
 .bar{position:absolute;bottom:0;left:0;height:6px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards}
 @keyframes shrink{from{width:100%}to{width:0%}}
 </style></head><body>
@@ -123,7 +133,7 @@ body{font-family:"${font}","Segoe UI",-apple-system,BlinkMacSystemFont,sans-seri
   <div class="content">
     <div class="title">${escapeHtml(displayName)}</div>
     ${channelDisplay ? `<div class="channel">${escapeHtml(channelDisplay)}</div>` : ""}
-    <div class="body">${escapeHtml(messageText)}</div>
+    <div class="body">${formatBody(messageText)}</div>
   </div>
   ${duration > 0 ? '<div class="bar"></div>' : ""}
 </div>
