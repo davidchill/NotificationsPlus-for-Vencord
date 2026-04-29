@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.1.10 — 2026-04-29
+
+### Added
+- **Toast stacking** — up to N server-message toasts can be visible simultaneously (new "Max stacked toasts (1–5)" setting, default 3). Previously, a new notification immediately replaced the existing one ("bump and replace"). Stacked toasts are ordered newest-closest-to-corner, oldest furthest away. The DM stack uses its own separate cap driven by the group threshold setting.
+- **Open Link button** — when the toast body contains a URL, a small "Open Link ↗" button appears in the bottom-right corner of the toast. Clicking it opens the URL in the system default browser via `shell.openExternal()` and dismisses the toast. Clicking the rest of the toast body still triggers the normal redirect-to-message behavior.
+- **DM visual differentiation** — direct message toasts use a green (`#23a55a`) accent color throughout (border, icon background, timer bar, "Direct Message" label) instead of blurple. A "Direct Message" channel-line label replaces the Category / #channel layout for DMs.
+- **Separate DM placement settings** — new "Direct Message Placement" settings panel section with independent Monitor, Corner, and offset controls for DM toasts. DMs are detected by the absence of Discord's `(#channel, Category)` context group in the notification title.
+- **DM persist setting** — "Stay open until dismissed" toggle under "Direct Message Behavior". When enabled, DM toasts have no timer bar and never auto-close; the user must right-click or click to dismiss.
+- **DM grouping** — when undismissed DM toasts exceed the "Group after N messages" threshold (default 5, min 2), the oldest DM is evicted from the visible stack and a compact 52px summary window appears at the bottom reading "N earlier messages". Each new eviction increments the count live (via `executeJavaScript` DOM update without reload). Dismissing the group window resets the eviction counter.
+
+### Changed
+- **Separate Category and Channel lines** — the "Category | #channel" single line used in v0.1.9 is now rendered as two separate lines: the category name in a dim purple (60% opacity of the blurple accent) and the channel name in the full blurple accent. This gives each piece of context its own visual weight.
+- **Category color** — category text is now styled at 60% opacity of the blurple/green accent (`rgba(88,101,242,.6)` dark / `rgba(88,101,242,.7)` light for server messages; equivalent green values for DMs) rather than using `--text-muted`. This makes the category visually connected to the accent color hierarchy rather than appearing as generic secondary text.
+- **"Placement" renamed to "Server Message Placement"** in the settings panel to distinguish it from the new DM placement section.
+
+### Fixed
+- **Toast overlap with stacking** — the previous multi-toast implementation shifted each existing toast by a relative delta before the new one was sized. A race condition between two concurrently arriving notifications caused double-shifts and visual overlap. Replaced entirely with `repositionStack()`, which recomputes every toast's absolute Y coordinate from the corner edge outward on every insertion and after every height measurement. Concurrent notifications always converge to the correct layout with no drift.
+- **Category name truncation with parentheses** — category names containing their own parentheses (e.g. "Community (Non-GTA)") were truncated at the first `)` because the previous regex used `[^)]+`. Fixed with a balanced-paren walking algorithm that locates the outer Discord context group `(#channel, Category)` and finds its true matching `)` regardless of nested parens in the category name.
+
+### Internal
+- `activeToasts: Map<string, BrowserWindow>` replaced by `toastStacks: Map<string, StackEntry[]>` where `StackEntry = { win: BrowserWindow; h: number; isGroup: boolean }`.
+- `evictedCounts: Map<string, number>` added — tracks per-stack DM overflow count.
+- `repositionStack(toastKey, bounds, isBottom, isRight, offsetX, offsetY)` added — absolute position recomputation, called synchronously on insert and after height measurement.
+- `buildGroupHtml(count, isDM, font, channelSize)` added — compact 52px group summary window HTML.
+- `createGroupWindow(toastKey, count, isDM, ...)` added — async; appends group entry to end of stack and shows it.
+- `updateGroupLabel(entry, count)` added — fire-and-forget `executeJavaScript` DOM update for the live count label.
+- `isDMTitle(title)` added — returns true when the title has no `\s+\(#` pattern.
+- `shell` added to `electron` import in `native.ts` for `shell.openExternal()`.
+- `stopMainProcessPatch()` now calls `evictedCounts.clear()` in addition to closing all stacked windows.
+- `ToastOptions` extended with `dmDisplayIndex`, `dmCorner`, `dmOffsetX`, `dmOffsetY`, `dmPersist`, `dmGroupThreshold`, `stackSize`.
+- `GROUP_H = 52` constant added.
+
+---
+
 ## v0.1.9 — 2026-04-28
 
 ### Added

@@ -41,14 +41,22 @@ let OriginalNotification: typeof window.Notification | null = null;
 function getToastConfig(): ToastConfig {
     const {
         toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
+        toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
+        toastDmPersist, toastDmGroupThreshold,
         toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick, toastIconUrl,
-        toastFont, toastTitleSize, toastChannelSize, toastBodySize,
+        toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize,
     } = settings.store;
     return {
         displayIndex: toastDisplayIndex,
         corner: toastCorner as ToastOptions["corner"],
         offsetX: toastOffsetX,
         offsetY: toastOffsetY,
+        dmDisplayIndex: toastDmDisplayIndex,
+        dmCorner: toastDmCorner as ToastOptions["dmCorner"],
+        dmOffsetX: toastDmOffsetX,
+        dmOffsetY: toastDmOffsetY,
+        dmPersist: toastDmPersist,
+        dmGroupThreshold: toastDmGroupThreshold,
         duration: toastDuration,
         titleTemplate: toastTitleTemplate,
         bodyTemplate: toastBodyTemplate,
@@ -58,6 +66,7 @@ function getToastConfig(): ToastConfig {
         titleSize: toastTitleSize,
         channelSize: toastChannelSize,
         bodySize: toastBodySize,
+        stackSize: toastStackSize,
     };
 }
 
@@ -68,8 +77,10 @@ function applyToastPatch() {
     function PatchedNotification(title: string, options?: NotificationOptions) {
         const {
             toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
+            toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
+            toastDmPersist, toastDmGroupThreshold,
             toastDuration, toastTitleTemplate, toastBodyTemplate, toastIconUrl,
-            toastFont, toastTitleSize, toastChannelSize, toastBodySize,
+            toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize,
         } = settings.store;
 
         Native.showToast({
@@ -80,11 +91,18 @@ function applyToastPatch() {
             corner: toastCorner as ToastOptions["corner"],
             offsetX: toastOffsetX,
             offsetY: toastOffsetY,
+            dmDisplayIndex: toastDmDisplayIndex,
+            dmCorner: toastDmCorner as ToastOptions["dmCorner"],
+            dmOffsetX: toastDmOffsetX,
+            dmOffsetY: toastDmOffsetY,
+            dmPersist: toastDmPersist,
+            dmGroupThreshold: toastDmGroupThreshold,
             duration: toastDuration,
             font: toastFont,
             titleSize: toastTitleSize,
             channelSize: toastChannelSize,
             bodySize: toastBodySize,
+            stackSize: toastStackSize,
         });
 
         return { onclick: null, onclose: null, close() { } };
@@ -200,11 +218,18 @@ function SettingsPanel() {
                 corner: s.toastCorner as ToastOptions["corner"],
                 offsetX: s.toastOffsetX,
                 offsetY: s.toastOffsetY,
+                dmDisplayIndex: s.toastDmDisplayIndex,
+                dmCorner: s.toastDmCorner as ToastOptions["dmCorner"],
+                dmOffsetX: s.toastDmOffsetX,
+                dmOffsetY: s.toastDmOffsetY,
+                dmPersist: s.toastDmPersist,
+                dmGroupThreshold: s.toastDmGroupThreshold,
                 duration: s.toastDuration,
                 font: s.toastFont,
                 titleSize: s.toastTitleSize,
                 channelSize: s.toastChannelSize,
                 bodySize: s.toastBodySize,
+                stackSize: s.toastStackSize,
             });
         } else {
             showNotification({
@@ -258,7 +283,7 @@ function SettingsPanel() {
                     <Forms.FormText>Replace OS notifications with a custom positionable window</Forms.FormText>
                 </div>
 
-                <SubHeader>Placement</SubHeader>
+                <SubHeader>Server Message Placement</SubHeader>
                 <Grid>
                     <Cell label="Monitor (0 = primary)">
                         <NumInput value={s.toastDisplayIndex} min={0} onChange={v => set("toastDisplayIndex", v, updateToast)} />
@@ -279,10 +304,47 @@ function SettingsPanel() {
                     </Cell>
                 </Grid>
 
+                <SubHeader>Direct Message Placement</SubHeader>
+                <Grid>
+                    <Cell label="Monitor (0 = primary)">
+                        <NumInput value={s.toastDmDisplayIndex} min={0} onChange={v => set("toastDmDisplayIndex", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Corner">
+                        <Select
+                            options={CORNER_OPTIONS}
+                            select={v => set("toastDmCorner", v, updateToast)}
+                            isSelected={v => v === s.toastDmCorner}
+                            serialize={v => v}
+                        />
+                    </Cell>
+                    <Cell label="Horizontal offset (px)">
+                        <NumInput value={s.toastDmOffsetX} min={0} onChange={v => set("toastDmOffsetX", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Vertical offset (px)">
+                        <NumInput value={s.toastDmOffsetY} min={0} onChange={v => set("toastDmOffsetY", v, updateToast)} />
+                    </Cell>
+                </Grid>
+
+                <SubHeader>Direct Message Behavior</SubHeader>
+                <Grid>
+                    <Cell label="Stay open until dismissed">
+                        <Switch
+                            checked={s.toastDmPersist}
+                            onChange={v => set("toastDmPersist", v, updateToast)}
+                        />
+                    </Cell>
+                    <Cell label="Group after N messages">
+                        <NumInput value={s.toastDmGroupThreshold} min={2} onChange={v => set("toastDmGroupThreshold", Math.max(2, v), updateToast)} />
+                    </Cell>
+                </Grid>
+
                 <SubHeader>Behavior</SubHeader>
                 <Grid>
                     <Cell label="Duration in seconds (0 = stays until clicked)">
                         <NumInput value={s.toastDuration} min={0} onChange={v => set("toastDuration", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Max stacked toasts (1–5)">
+                        <NumInput value={s.toastStackSize} min={1} onChange={v => set("toastStackSize", Math.max(1, Math.min(5, v)), updateToast)} />
                     </Cell>
                     <Cell label="Redirect to message on click">
                         <Switch
@@ -428,11 +490,58 @@ const settings = definePluginSettings({
         type: OptionType.NUMBER,
         default: 16,
     },
+    toastDmDisplayIndex: {
+        hidden: true,
+        description: "Monitor index (0 = primary) — DM toasts",
+        type: OptionType.NUMBER,
+        default: 0,
+    },
+    toastDmCorner: {
+        hidden: true,
+        description: "Corner for DM toasts",
+        type: OptionType.SELECT,
+        options: [
+            { label: "Bottom Right", value: "bottom-right", default: true },
+            { label: "Bottom Left", value: "bottom-left" },
+            { label: "Top Right", value: "top-right" },
+            { label: "Top Left", value: "top-left" },
+        ],
+    },
+    toastDmOffsetX: {
+        hidden: true,
+        description: "Horizontal offset (px) — DM toasts",
+        type: OptionType.NUMBER,
+        default: 16,
+    },
+    toastDmOffsetY: {
+        hidden: true,
+        description: "Vertical offset (px) — DM toasts",
+        type: OptionType.NUMBER,
+        default: 16,
+    },
+    toastDmPersist: {
+        hidden: true,
+        description: "DM toasts stay open until manually dismissed",
+        type: OptionType.BOOLEAN,
+        default: false,
+    },
+    toastDmGroupThreshold: {
+        hidden: true,
+        description: "Max individual DM toasts before overflow condenses into a group summary",
+        type: OptionType.NUMBER,
+        default: 5,
+    },
     toastDuration: {
         hidden: true,
         description: "Seconds before auto-dismiss (0 = stays until clicked)",
         type: OptionType.NUMBER,
         default: 5,
+    },
+    toastStackSize: {
+        hidden: true,
+        description: "Maximum number of toasts stacked at once (1–5)",
+        type: OptionType.NUMBER,
+        default: 3,
     },
     toastTitleTemplate: {
         hidden: true,
