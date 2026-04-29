@@ -38,7 +38,7 @@ export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
 
 const TOAST_W = 345;
 const TOAST_MIN_H = 113;
-const TOAST_MAX_H = 300;
+const TOAST_MAX_H = 400;
 
 // Google Fonts that need a <link> injection. System fonts (Arial, Segoe UI, etc.) are not listed here.
 const GOOGLE_FONTS: Record<string, string> = {
@@ -115,10 +115,10 @@ body{font-family:"${font}","Segoe UI",-apple-system,BlinkMacSystemFont,sans-seri
 .title{font-size:${titleSize}px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
 .channel{font-size:${channelSize}px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
 .body{font-size:${bodySize}px;line-height:1.4;color:var(--text);overflow-wrap:break-word;word-break:break-word}
-.bar{position:absolute;bottom:0;left:0;height:3px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards}
+.bar{position:absolute;bottom:0;left:0;height:6px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards}
 @keyframes shrink{from{width:100%}to{width:0%}}
 </style></head><body>
-<div class="toast" onclick="${onclick}">
+<div class="toast" onclick="${onclick}" oncontextmenu="window.close()">
   <div class="icon-wrap">${iconContent}</div>
   <div class="content">
     <div class="title">${escapeHtml(displayName)}</div>

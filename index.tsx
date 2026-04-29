@@ -8,9 +8,10 @@ import "./style.css";
 
 import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
+import { Switch } from "@components/Switch";
 import { PluginNative } from "@utils/types";
 import definePlugin, { OptionType } from "@utils/types";
-import { Button, React } from "@webpack/common";
+import { Button, Forms, React, Select, TextInput } from "@webpack/common";
 
 import type { DisplayInfo, ToastConfig, ToastOptions } from "./native";
 
@@ -29,7 +30,11 @@ function applyPosition() {
     root.style.setProperty("--np-right", isLeft ? "unset" : `${offsetX}px`);
 }
 
-// ── Native toast interception ────────────────────────────────────────────────
+// ── Native toast helpers ─────────────────────────────────────────────────────
+
+function updateToast() {
+    if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig());
+}
 
 let OriginalNotification: typeof window.Notification | null = null;
 
@@ -107,12 +112,255 @@ function removeToastPatch() {
     Native.stopMainProcessPatch();
 }
 
+// ── Settings UI ──────────────────────────────────────────────────────────────
+
+const CORNER_OPTIONS = [
+    { label: "Bottom Right", value: "bottom-right" },
+    { label: "Bottom Left", value: "bottom-left" },
+    { label: "Top Right", value: "top-right" },
+    { label: "Top Left", value: "top-left" },
+];
+
+const FONT_OPTIONS = [
+    { label: "Nunito", value: "Nunito" },
+    { label: "Inter", value: "Inter" },
+    { label: "Poppins", value: "Poppins" },
+    { label: "Roboto", value: "Roboto" },
+    { label: "Open Sans", value: "Open Sans" },
+    { label: "Lato", value: "Lato" },
+    { label: "Segoe UI (system)", value: "Segoe UI" },
+    { label: "Arial (system)", value: "Arial" },
+];
+
+function Cell({ label, children, full }: { label: string; children: React.ReactNode; full?: boolean; }) {
+    return (
+        <div style={{ gridColumn: full ? "1 / -1" : undefined }}>
+            <Forms.FormText style={{ marginBottom: 6, fontSize: 12, color: "var(--text-muted)" }}>
+                {label}
+            </Forms.FormText>
+            {children}
+        </div>
+    );
+}
+
+function NumInput({ value, min, onChange }: { value: number; min?: number; onChange: (v: number) => void; }) {
+    const [raw, setRaw] = React.useState(String(value));
+    React.useEffect(() => { setRaw(String(value)); }, [value]);
+    return (
+        <input
+            type="number"
+            className="np-num"
+            value={raw}
+            min={min}
+            onChange={e => {
+                setRaw(e.target.value);
+                const v = parseInt(e.target.value, 10);
+                if (!isNaN(v) && (min === undefined || v >= min)) onChange(v);
+            }}
+        />
+    );
+}
+
+function SubHeader({ children }: { children: React.ReactNode; }) {
+    return (
+        <div className="np-subheader">{children}</div>
+    );
+}
+
+function Grid({ children }: { children: React.ReactNode; }) {
+    return (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {children}
+        </div>
+    );
+}
+
+function SettingsPanel() {
+    const [, rerender] = React.useReducer(n => n + 1, 0);
+    const [displays, setDisplays] = React.useState<DisplayInfo[]>([]);
+    const s = settings.store;
+
+    React.useEffect(() => {
+        Native.getDisplays().then(setDisplays);
+    }, []);
+
+    function set<K extends keyof typeof s>(key: K, value: typeof s[K], effect?: () => void) {
+        s[key] = value;
+        effect?.();
+        rerender();
+    }
+
+    function handleTest() {
+        if (s.useCustomNativeToast) {
+            Native.showToast({
+                title: "NotificationsPlus",
+                body: "Custom toast is working — looking good?",
+                icon: "",
+                displayIndex: s.toastDisplayIndex,
+                corner: s.toastCorner as ToastOptions["corner"],
+                offsetX: s.toastOffsetX,
+                offsetY: s.toastOffsetY,
+                duration: s.toastDuration,
+                font: s.toastFont,
+                titleSize: s.toastTitleSize,
+                channelSize: s.toastChannelSize,
+                bodySize: s.toastBodySize,
+            });
+        } else {
+            showNotification({
+                title: "NotificationsPlus",
+                body: "This is a test notification — looking good?",
+                noPersist: true,
+            });
+        }
+    }
+
+    return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+
+            {/* ── IN-APP OVERLAY ── */}
+            <div>
+                <Forms.FormTitle tag="h4">In-App Overlay</Forms.FormTitle>
+                <Grid>
+                    <Cell label="Corner">
+                        <Select
+                            options={CORNER_OPTIONS}
+                            select={v => set("position", v, applyPosition)}
+                            isSelected={v => v === s.position}
+                            serialize={v => v}
+                        />
+                    </Cell>
+                    <Cell label="Mute notification sound">
+                        <Switch
+                            checked={s.suppressNotificationSound}
+                            onChange={v => set("suppressNotificationSound", v)}
+                        />
+                    </Cell>
+                    <Cell label="Horizontal offset (px)">
+                        <NumInput value={s.offsetX} min={0} onChange={v => set("offsetX", v, applyPosition)} />
+                    </Cell>
+                    <Cell label="Vertical offset (px)">
+                        <NumInput value={s.offsetY} min={0} onChange={v => set("offsetY", v, applyPosition)} />
+                    </Cell>
+                </Grid>
+            </div>
+
+            <Forms.FormDivider />
+
+            {/* ── CUSTOM TOAST ── */}
+            <div>
+                <Forms.FormTitle tag="h4" style={{ marginBottom: 8 }}>Custom Toast Notifications</Forms.FormTitle>
+                <div className="np-toggle-row">
+                    <Switch
+                        checked={s.useCustomNativeToast}
+                        onChange={v => set("useCustomNativeToast", v, () => v ? applyToastPatch() : removeToastPatch())}
+                    />
+                    <Forms.FormText>Replace OS notifications with a custom positionable window</Forms.FormText>
+                </div>
+
+                <SubHeader>Placement</SubHeader>
+                <Grid>
+                    <Cell label="Monitor (0 = primary)">
+                        <NumInput value={s.toastDisplayIndex} min={0} onChange={v => set("toastDisplayIndex", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Corner">
+                        <Select
+                            options={CORNER_OPTIONS}
+                            select={v => set("toastCorner", v, updateToast)}
+                            isSelected={v => v === s.toastCorner}
+                            serialize={v => v}
+                        />
+                    </Cell>
+                    <Cell label="Horizontal offset (px)">
+                        <NumInput value={s.toastOffsetX} min={0} onChange={v => set("toastOffsetX", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Vertical offset (px)">
+                        <NumInput value={s.toastOffsetY} min={0} onChange={v => set("toastOffsetY", v, updateToast)} />
+                    </Cell>
+                </Grid>
+
+                <SubHeader>Behavior</SubHeader>
+                <Grid>
+                    <Cell label="Duration in seconds (0 = stays until clicked)">
+                        <NumInput value={s.toastDuration} min={0} onChange={v => set("toastDuration", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Redirect to message on click">
+                        <Switch
+                            checked={s.redirectOnClick}
+                            onChange={v => set("redirectOnClick", v, updateToast)}
+                        />
+                    </Cell>
+                </Grid>
+
+                <SubHeader>Appearance</SubHeader>
+                <Grid>
+                    <Cell label="Font family">
+                        <Select
+                            options={FONT_OPTIONS}
+                            select={v => set("toastFont", v, updateToast)}
+                            isSelected={v => v === s.toastFont}
+                            serialize={v => v}
+                        />
+                    </Cell>
+                    <Cell label="Title size (px)">
+                        <NumInput value={s.toastTitleSize} min={8} onChange={v => set("toastTitleSize", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Channel line size (px)">
+                        <NumInput value={s.toastChannelSize} min={8} onChange={v => set("toastChannelSize", v, updateToast)} />
+                    </Cell>
+                    <Cell label="Body size (px)">
+                        <NumInput value={s.toastBodySize} min={8} onChange={v => set("toastBodySize", v, updateToast)} />
+                    </Cell>
+                </Grid>
+
+                <SubHeader>Content</SubHeader>
+                <Grid>
+                    <Cell label='Title template — use {title}'>
+                        <TextInput
+                            value={s.toastTitleTemplate}
+                            onChange={v => set("toastTitleTemplate", v, updateToast)}
+                        />
+                    </Cell>
+                    <Cell label='Body template — use {body}'>
+                        <TextInput
+                            value={s.toastBodyTemplate}
+                            onChange={v => set("toastBodyTemplate", v, updateToast)}
+                        />
+                    </Cell>
+                    <Cell label="Icon URL override (blank = Discord's logo)" full>
+                        <TextInput
+                            value={s.toastIconUrl}
+                            onChange={v => set("toastIconUrl", v)}
+                            placeholder="https://..."
+                        />
+                    </Cell>
+                </Grid>
+
+                {displays.length > 0 && (
+                    <div className="np-monitor-list">
+                        {displays.map(d => (
+                            <div key={d.index}>
+                                <strong style={{ color: "var(--text-normal)" }}>Monitor {d.index}</strong>
+                                {d.primary ? " (primary)" : ""} — {d.label} · {d.bounds.width}×{d.bounds.height}
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            <Button onClick={handleTest} style={{ alignSelf: "flex-start" }}>Send test notification</Button>
+        </div>
+    );
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 const settings = definePluginSettings({
-    // In-app overlay
+    // All typed settings are hidden — SettingsPanel above renders the full UI.
+    // hidden: true suppresses the auto-generated control while keeping the value in settings.store.
     position: {
-        description: "Corner where Vencord's in-app notifications appear",
+        hidden: true,
+        description: "Corner for in-app overlay",
         type: OptionType.SELECT,
         options: [
             { label: "Bottom Right", value: "bottom-right", default: true },
@@ -120,49 +368,46 @@ const settings = definePluginSettings({
             { label: "Top Right", value: "top-right" },
             { label: "Top Left", value: "top-left" },
         ],
-        onChange: applyPosition,
     },
     offsetX: {
-        description: "Horizontal distance from the screen edge (px) — in-app notifications",
+        hidden: true,
+        description: "Horizontal offset (px) — in-app overlay",
         type: OptionType.NUMBER,
         default: 16,
-        onChange: applyPosition,
     },
     offsetY: {
-        description: "Vertical distance from the screen edge (px) — in-app notifications",
+        hidden: true,
+        description: "Vertical offset (px) — in-app overlay",
         type: OptionType.NUMBER,
         default: 16,
-        onChange: applyPosition,
     },
-
-    // Sound suppression — standalone feature, no dependency on custom toast
     suppressNotificationSound: {
+        hidden: true,
         description: "Mute Discord's notification sound",
         type: OptionType.BOOLEAN,
         default: false,
     },
-
-    // Custom native toast
     useCustomNativeToast: {
-        description: "Replace native OS notifications with a custom positionable window",
+        hidden: true,
+        description: "Enable custom toast window",
         type: OptionType.BOOLEAN,
         default: false,
-        onChange: (val: boolean) => val ? applyToastPatch() : removeToastPatch(),
     },
     redirectOnClick: {
+        hidden: true,
         description: "Clicking the custom toast opens the message in Discord",
         type: OptionType.BOOLEAN,
         default: true,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastDisplayIndex: {
-        description: "Monitor to show custom notifications on — see monitor list below (0 = primary)",
+        hidden: true,
+        description: "Monitor index (0 = primary)",
         type: OptionType.NUMBER,
         default: 0,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastCorner: {
-        description: "Corner for custom notifications",
+        hidden: true,
+        description: "Corner for custom toast",
         type: OptionType.SELECT,
         options: [
             { label: "Bottom Right", value: "bottom-right", default: true },
@@ -170,45 +415,46 @@ const settings = definePluginSettings({
             { label: "Top Right", value: "top-right" },
             { label: "Top Left", value: "top-left" },
         ],
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastOffsetX: {
-        description: "Horizontal distance from screen edge (px) — custom toast",
+        hidden: true,
+        description: "Horizontal offset (px) — custom toast",
         type: OptionType.NUMBER,
         default: 16,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastOffsetY: {
-        description: "Vertical distance from screen edge (px) — custom toast",
+        hidden: true,
+        description: "Vertical offset (px) — custom toast",
         type: OptionType.NUMBER,
         default: 16,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastDuration: {
-        description: "Seconds before the toast auto-dismisses (0 = stays until clicked)",
+        hidden: true,
+        description: "Seconds before auto-dismiss (0 = stays until clicked)",
         type: OptionType.NUMBER,
         default: 5,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastTitleTemplate: {
-        description: "Title template — use {title} for the original notification title",
+        hidden: true,
+        description: "Title template",
         type: OptionType.STRING,
         default: "{title}",
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastBodyTemplate: {
-        description: "Body template — use {body} for the original notification body",
+        hidden: true,
+        description: "Body template",
         type: OptionType.STRING,
         default: "{body}",
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastIconUrl: {
-        description: "Icon URL override — leave blank to use Discord's logo",
+        hidden: true,
+        description: "Icon URL override",
         type: OptionType.STRING,
         default: "",
     },
     toastFont: {
-        description: "Font for the custom toast",
+        hidden: true,
+        description: "Font for custom toast",
         type: OptionType.SELECT,
         options: [
             { label: "Nunito", value: "Nunito", default: true },
@@ -220,25 +466,29 @@ const settings = definePluginSettings({
             { label: "Segoe UI (system)", value: "Segoe UI" },
             { label: "Arial (system)", value: "Arial" },
         ],
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastTitleSize: {
+        hidden: true,
         description: "Title font size (px)",
         type: OptionType.NUMBER,
         default: 14,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastChannelSize: {
+        hidden: true,
         description: "Channel line font size (px)",
         type: OptionType.NUMBER,
         default: 12,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
     },
     toastBodySize: {
-        description: "Message body font size (px)",
+        hidden: true,
+        description: "Body font size (px)",
         type: OptionType.NUMBER,
         default: 13,
-        onChange: () => { if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig()); },
+    },
+    _ui: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: () => <SettingsPanel />,
     },
 });
 
@@ -262,52 +512,6 @@ export default definePlugin({
             },
         },
     ],
-
-    settingsAboutComponent() {
-        const [displays, setDisplays] = React.useState<DisplayInfo[]>([]);
-
-        React.useEffect(() => {
-            Native.getDisplays().then(setDisplays);
-        }, []);
-
-        function handleTest() {
-            if (settings.store.useCustomNativeToast) {
-                const { toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY, toastDuration } = settings.store;
-                Native.showToast({
-                    title: "NotificationsPlus",
-                    body: "Custom toast is working — looking good?",
-                    icon: "",
-                    displayIndex: toastDisplayIndex,
-                    corner: toastCorner as ToastOptions["corner"],
-                    offsetX: toastOffsetX,
-                    offsetY: toastOffsetY,
-                    duration: toastDuration,
-                });
-            } else {
-                showNotification({
-                    title: "NotificationsPlus",
-                    body: "This is a test notification — looking good?",
-                    noPersist: true,
-                });
-            }
-        }
-
-        return (
-            <>
-                {displays.length > 0 && (
-                    <div style={{ marginBottom: "8px", fontSize: "13px", color: "var(--text-muted)", lineHeight: "1.8" }}>
-                        {displays.map(d => (
-                            <div key={d.index}>
-                                <strong style={{ color: "var(--text-normal)" }}>Monitor {d.index}</strong>
-                                {d.primary ? " (primary)" : ""} — {d.label} · {d.bounds.width}×{d.bounds.height}
-                            </div>
-                        ))}
-                    </div>
-                )}
-                <Button onClick={handleTest}>Send test notification</Button>
-            </>
-        );
-    },
 
     start() {
         applyPosition();

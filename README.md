@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.7`
+`0.1.8`
 
 ## What it does
 
@@ -59,7 +59,7 @@ On `start()`, the plugin writes four CSS custom properties (`--np-top`, `--np-bo
 ### Custom native toast
 `native.ts` runs in Electron's main process. On enable, it patches `ElectronNotification.prototype.show` — the shared prototype method called by every Electron `Notification` instance — so the intercept fires regardless of when Discord created the object. Discord on Windows uses `toastXml` (raw Windows Toast XML) rather than setting `title`/`body` directly, so the plugin parses `<text>` elements from the XML as a fallback. The `toastXml` contains exactly two `<text>` elements: `[0]` is the notification title in the format `"Username (#channel-name, Category)"` and `[1]` is the message body. The server name is not included anywhere in Discord's notification data. The custom toast displays: **Username** / **Category | #channel** / **Message**. The sender's avatar is embedded in `toastXml` as a local temp file path; the plugin reads it immediately in the main process and converts it to a base64 data URI so it can be inlined into the toast HTML (a sandboxed `BrowserWindow` cannot load bare file paths from a `data:` page).
 
-The toast window is created hidden (`show: false`) at a minimum height of 113 px. After the HTML loads, the plugin measures `document.documentElement.scrollHeight` via `webContents.executeJavaScript` and resizes the window to fit the content (capped at 300 px), re-anchoring the `y` position for bottom-corner toasts before calling `win.show()`. This means the window always appears at its final size with no visible resize flash. Font selection injects a Google Fonts `<link>` tag into the toast HTML at render time; system font choices (Segoe UI, Arial) skip the network request entirely.
+The toast window is created hidden (`show: false`) at a minimum height of 113 px. After the HTML loads, the plugin measures `document.documentElement.scrollHeight` via `webContents.executeJavaScript` and resizes the window to fit the content (capped at 400 px), re-anchoring the `y` position for bottom-corner toasts before calling `win.show()`. This means the window always appears at its final size with no visible resize flash. Font selection injects a Google Fonts `<link>` tag into the toast HTML at render time; system font choices (Segoe UI, Arial) skip the network request entirely. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
 
 **Multiple notifications (bump and replace):** Only one custom toast is ever visible per corner/display combination at a time. When a new notification arrives while a toast is showing, the existing window is closed immediately and the new one takes its place. This prevents notifications from layering on top of each other without the risk of stacking off-screen. Tracked internally via an `activeToasts` map keyed by `"${displayIndex}-${corner}"`.
 

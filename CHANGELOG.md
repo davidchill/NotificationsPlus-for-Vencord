@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.1.8 — 2026-04-28
+
+### Changed
+- **Settings panel redesigned as a two-column grid** — all 17 settings were previously rendered as a flat auto-generated flat list by Vencord's settings framework. They are now hidden from the auto-renderer (`hidden: true`) and replaced by a single `OptionType.COMPONENT` entry that drives a fully custom React panel. The panel is organized into two top-level sections (**In-App Overlay** and **Custom Toast Notifications**), with the toast section broken into labeled sub-groups (**Placement**, **Behavior**, **Appearance**, **Content**) rendered in a 2-column CSS grid. The monitor list and test button, previously in `settingsAboutComponent` (which renders above the settings heading), now live at the bottom of the Custom Toast section where they are contextually relevant.
+- **Timer bar height increased from 3 px to 6 px** — the countdown progress bar at the bottom of the custom toast window is now more visually prominent.
+- **Maximum toast height increased from 300 px to 400 px** — long messages that previously clipped at 300 px can now expand to 400 px before truncating.
+
+### Added
+- **Right-click to dismiss** — right-clicking anywhere on a custom toast now closes it immediately. Because the `BrowserWindow` has no native frame, Electron shows no context menu — the gesture dismisses cleanly with no extra UI.
+
+### Fixed
+- **Test notification now matches real notifications** — the "Send test notification" button was missing `font`, `titleSize`, `channelSize`, and `bodySize` from its `Native.showToast` call, so it rendered using the toast window's built-in defaults while real notifications used the configured values. All four parameters are now passed.
+- **Number input styling** — custom number inputs (`<input type="number">`) in the settings panel were rendering as unstyled dark boxes because `--input-background` and `--input-border` don't exist in Discord's theme. Corrected to `--input-background-default` and `--text-default`, matching the variables used by other Vencord plugins.
+- **`Switch` import corrected** — `Switch` was being imported from `@webpack/common` (Discord's internal component, which uses a `value` prop). The correct import for Vencord plugins is `@components/Switch`, which uses a `checked` prop.
+
+### Internal
+- `updateToast()` extracted as a named helper function, replacing repeated inline lambdas on every `onChange` handler.
+- `settingsAboutComponent` removed; its content folded into `SettingsPanel`.
+- Settings panel CSS classes (`np-num`, `np-subheader`, `np-toggle-row`, `np-monitor-list`) added to `style.css`.
+
+---
+
 ## v0.1.7 — 2026-04-28
 
 ### Fixed

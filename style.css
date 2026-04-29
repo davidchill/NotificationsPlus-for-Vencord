@@ -18,3 +18,58 @@
 body.np-toast-active .vc-notification-root:not(.vc-notification-log-wrapper > .vc-notification-root) {
     display: none !important;
 }
+
+/* ── Settings panel UI ───────────────────────────────────────────────────── */
+
+.np-num {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    background: var(--input-background-default);
+    color: var(--text-default);
+    border: 1px solid var(--input-background-default);
+    border-radius: 3px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.np-num:focus {
+    border-color: var(--brand-500);
+}
+
+.np-num::-webkit-inner-spin-button,
+.np-num::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.np-subheader {
+    margin-top: 16px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.np-toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--background-secondary);
+    border-radius: 8px;
+    margin-bottom: 4px;
+}
+
+.np-monitor-list {
+    margin-top: 16px;
+    padding: 8px 12px;
+    background: var(--background-secondary);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.8;
+}
