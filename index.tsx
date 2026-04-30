@@ -1,6 +1,6 @@
 /*
  * Vencord, a Discord client mod
- * Copyright (c) 2025 David Rodriguez and contributors
+ * Copyright (c) 2026 David Rodriguez and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -644,7 +644,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "NotificationsPlus",
     description: "Adds position and offset control to Vencord's in-app notifications, and replaces native OS toasts with a fully positionable custom window",
-    authors: [{ name: "David Rodriguez", id: 0n }],
+    authors: [{ name: "David Rodriguez", id: 140194457222905856n }],
     settings,
 
     patches: [

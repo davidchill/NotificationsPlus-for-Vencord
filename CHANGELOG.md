@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.12 — 2026-04-29
+
+### Changed
+- **Copyright year updated** — license headers in `index.tsx` and `native.ts` updated from 2025 to 2026.
+- **Author Discord ID corrected** — `authors` entry in `definePlugin` updated from the placeholder `0n` to the real Discord user ID (`140194457222905856n`), bringing the plugin into compliance with Vencord's userplugin guidelines.
+
+---
+
 ## v0.1.11 — 2026-04-29
 
 ### Added
