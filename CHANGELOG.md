@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.11 — 2026-04-29
+
+### Added
+- **Slide-in entrance animation** — new "Entrance animation" setting (None / Slide in, default None). When set to "Slide in", each toast animates in from the screen edge over 220 ms using a `cubic-bezier(.22,1,.36,1)` ease-out curve. Direction is corner-aware: right-anchored toasts slide in from the right, left-anchored from the left.
+- **Gradient background** — new "Gradient background" toggle (default Off). When enabled, the toast background uses a subtle diagonal gradient (`135deg`) instead of a flat fill. Dark mode shifts from `#2b2d31` to `#2e303a` (a faint blue-grey tint that echoes the blurple accent); light mode shifts from `#ffffff` to `#f4f4f8`. Both variants are defined as per-notification CSS variables, so the correct value is always in scope without a global style sheet change.
+
+### Changed
+- **Accent glow on left border** — the 4px left accent stripe now emits a matching soft box-shadow (`-3px 0 14px rgba(...)`) that bleeds slightly beyond the border. Blurple (`rgba(88,101,242,.3)`) for server messages, green (`rgba(35,165,90,.3)`) for DMs in dark mode; slightly reduced opacity in light mode.
+- **Glowing timer bar** — the bottom countdown progress bar now carries a matching `box-shadow` glow (`0 0 8px var(--accent), 0 0 2px var(--accent)`) so it radiates the accent color rather than being a flat stripe.
+- **Hover micro-scale** — `.toast:hover` now applies `transform: scale(1.012)` with a `0.1s` ease transition, giving a subtle tactile "this is clickable" response. The background color transition is also smoothed to `0.12s`.
+
+### Internal
+- `buildHtml()` signature extended with `entrance: string`, `isRight: boolean`, and `gradientBg: boolean`.
+- `bgDark` / `bgLight` computed variables added to `buildHtml`; `--bg` CSS variable is now a template expression rather than a hardcoded literal.
+- `glowDark` / `glowLight` computed variables added; new `--glow` CSS variable injected into both `:root` and the `@media(prefers-color-scheme:light)` `:root` override.
+- `slideKeyframes` / `slideAnimation` computed variables added; the `@keyframes slide-in` block is only emitted into the toast HTML when `entrance === "slide"`, so there is zero overhead when animation is off.
+- `ToastOptions` extended with `entrance: "none" | "slide"` and `gradientBg: boolean`; both flow through `ToastConfig` automatically via `Omit`.
+
+---
+
 ## v0.1.10 — 2026-04-29
 
 ### Added

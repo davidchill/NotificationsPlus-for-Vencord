@@ -34,6 +34,8 @@ export interface ToastOptions {
     channelSize: number;
     bodySize: number;
     stackSize: number;
+    entrance: "none" | "slide";
+    gradientBg: boolean;
 }
 
 export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
@@ -78,7 +80,7 @@ function formatBody(text: string): string {
     );
 }
 
-function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean, font: string, titleSize: number, channelSize: number, bodySize: number) {
+function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean, font: string, titleSize: number, channelSize: number, bodySize: number, entrance: string, isRight: boolean, gradientBg: boolean) {
     const durationMs = duration * 1000;
     const iconContent = icon
         ? `<img class="icon" src="${escapeHtml(icon)}" onerror="this.style.display='none'" />`
@@ -142,15 +144,25 @@ function buildHtml(title: string, body: string, icon: string, duration: number, 
     const catLight    = isDM ? "rgba(35,165,90,.7)"   : "rgba(88,101,242,.7)";
     const hoverBg     = isDM ? "rgba(35,165,90,.12)"  : "rgba(88,101,242,.12)";
     const iconBg      = isDM ? "#23a55a" : "#5865f2";
+    const glowDark    = isDM ? "rgba(35,165,90,.3)"   : "rgba(88,101,242,.3)";
+    const glowLight   = isDM ? "rgba(35,165,90,.25)"  : "rgba(88,101,242,.25)";
+    const slideFrom   = isRight ? "calc(100% + 20px)" : "calc(-100% - 20px)";
+    const slideKeyframes = entrance === "slide"
+        ? `@keyframes slide-in{from{transform:translateX(${slideFrom});opacity:0}to{transform:translateX(0);opacity:1}}`
+        : "";
+    const slideAnimation = entrance === "slide" ? "animation:slide-in 220ms cubic-bezier(.22,1,.36,1) both;" : "";
+    const bgDark  = gradientBg ? "linear-gradient(135deg,#2b2d31 0%,#2e303a 100%)" : "#2b2d31";
+    const bgLight = gradientBg ? "linear-gradient(135deg,#ffffff 0%,#f4f4f8 100%)" : "#ffffff";
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8">${fontLink}<style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:auto;background:transparent;overflow:hidden}
 body{font-family:"${font}","Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased}
-:root{--bg:#2b2d31;--bg-hover:#32353b;--title:#f2f3f5;--text:#b5bac1;--border:${borderDark};--shadow:0 16px 48px rgba(0,0,0,.65),0 0 0 1px var(--border);--accent:${accentDark};--category:${catDark}}
-@media(prefers-color-scheme:light){:root{--bg:#ffffff;--bg-hover:#f2f3f5;--title:#060607;--text:#4e5058;--border:${borderLight};--shadow:0 8px 32px rgba(0,0,0,.18),0 0 0 1px var(--border);--accent:${accentLight};--category:${catLight}}}
-.toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;min-height:${TOAST_MIN_H}px;box-shadow:var(--shadow);position:relative;cursor:pointer;overflow:hidden;user-select:none}
-.toast:hover{background:var(--bg-hover)}
+:root{--bg:${bgDark};--bg-hover:#32353b;--title:#f2f3f5;--text:#b5bac1;--border:${borderDark};--shadow:0 16px 48px rgba(0,0,0,.65),0 0 0 1px var(--border);--glow:${glowDark};--accent:${accentDark};--category:${catDark}}
+@media(prefers-color-scheme:light){:root{--bg:${bgLight};--bg-hover:#f2f3f5;--title:#060607;--text:#4e5058;--border:${borderLight};--shadow:0 8px 32px rgba(0,0,0,.18),0 0 0 1px var(--border);--glow:${glowLight};--accent:${accentLight};--category:${catLight}}}
+${slideKeyframes}
+.toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;min-height:${TOAST_MIN_H}px;box-shadow:var(--shadow),var(--glow);position:relative;cursor:pointer;overflow:hidden;user-select:none;transition:background 0.12s,transform 0.1s;${slideAnimation}}
+.toast:hover{background:var(--bg-hover);transform:scale(1.012)}
 .icon-wrap{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:${iconBg};display:flex;align-items:center;justify-content:center;overflow:hidden}
 .icon{width:44px;height:44px;object-fit:cover;border-radius:50%}
 .content{flex:1;min-width:0;padding-top:2px}
@@ -159,7 +171,7 @@ body{font-family:"${font}","Segoe UI",-apple-system,BlinkMacSystemFont,sans-seri
 .channel{font-size:${channelSize}px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
 .body{font-size:${bodySize}px;line-height:1.4;color:var(--text);overflow-wrap:break-word;word-break:break-word;${bodyExtraPad}}
 .mention{color:var(--accent)}.link{color:var(--accent);text-decoration:underline}
-.bar{position:absolute;bottom:0;left:0;height:6px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards}
+.bar{position:absolute;bottom:0;left:0;height:6px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards;box-shadow:0 0 8px var(--accent),0 0 2px var(--accent)}
 @keyframes shrink{from{width:100%}to{width:0%}}
 .open-link-btn{position:absolute;bottom:14px;right:12px;font-size:10px;font-weight:600;color:var(--accent);background:transparent;border:1px solid var(--accent);border-radius:4px;padding:2px 7px;text-decoration:none;cursor:pointer;opacity:.8;letter-spacing:.02em;transition:opacity .15s,background .15s}
 .open-link-btn:hover{opacity:1;background:${hoverBg}}
@@ -354,7 +366,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         }
     });
 
-    const html = buildHtml(options.title, options.body, options.icon, effectiveDuration, !!onClicked, options.font, options.titleSize, options.channelSize, options.bodySize);
+    const html = buildHtml(options.title, options.body, options.icon, effectiveDuration, !!onClicked, options.font, options.titleSize, options.channelSize, options.bodySize, options.entrance, isRight, options.gradientBg);
     await win.loadURL(`data:text/html;base64,${Buffer.from(html).toString("base64")}`);
 
     // Measure actual rendered height, update the entry, and reposition the whole

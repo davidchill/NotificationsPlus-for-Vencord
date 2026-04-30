@@ -44,7 +44,7 @@ function getToastConfig(): ToastConfig {
         toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
         toastDmPersist, toastDmGroupThreshold,
         toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick, toastIconUrl,
-        toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize,
+        toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg,
     } = settings.store;
     return {
         displayIndex: toastDisplayIndex,
@@ -67,6 +67,8 @@ function getToastConfig(): ToastConfig {
         channelSize: toastChannelSize,
         bodySize: toastBodySize,
         stackSize: toastStackSize,
+        entrance: toastEntrance,
+        gradientBg: toastGradientBg,
     };
 }
 
@@ -80,7 +82,7 @@ function applyToastPatch() {
             toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
             toastDmPersist, toastDmGroupThreshold,
             toastDuration, toastTitleTemplate, toastBodyTemplate, toastIconUrl,
-            toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize,
+            toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg,
         } = settings.store;
 
         Native.showToast({
@@ -103,6 +105,8 @@ function applyToastPatch() {
             channelSize: toastChannelSize,
             bodySize: toastBodySize,
             stackSize: toastStackSize,
+            entrance: toastEntrance,
+            gradientBg: toastGradientBg,
         });
 
         return { onclick: null, onclose: null, close() { } };
@@ -230,6 +234,8 @@ function SettingsPanel() {
                 channelSize: s.toastChannelSize,
                 bodySize: s.toastBodySize,
                 stackSize: s.toastStackSize,
+                entrance: s.toastEntrance,
+                gradientBg: s.toastGradientBg,
             });
         } else {
             showNotification({
@@ -356,6 +362,23 @@ function SettingsPanel() {
 
                 <SubHeader>Appearance</SubHeader>
                 <Grid>
+                    <Cell label="Entrance animation">
+                        <Select
+                            options={[
+                                { label: "None", value: "none" },
+                                { label: "Slide in", value: "slide" },
+                            ]}
+                            select={v => set("toastEntrance", v, updateToast)}
+                            isSelected={v => v === s.toastEntrance}
+                            serialize={v => v}
+                        />
+                    </Cell>
+                    <Cell label="Gradient background">
+                        <Switch
+                            checked={s.toastGradientBg}
+                            onChange={v => set("toastGradientBg", v, updateToast)}
+                        />
+                    </Cell>
                     <Cell label="Font family">
                         <Select
                             options={FONT_OPTIONS}
@@ -542,6 +565,21 @@ const settings = definePluginSettings({
         description: "Maximum number of toasts stacked at once (1–5)",
         type: OptionType.NUMBER,
         default: 3,
+    },
+    toastGradientBg: {
+        hidden: true,
+        description: "Subtle gradient background on toast",
+        type: OptionType.BOOLEAN,
+        default: false,
+    },
+    toastEntrance: {
+        hidden: true,
+        description: "Toast entrance animation style",
+        type: OptionType.SELECT,
+        options: [
+            { label: "None", value: "none", default: true },
+            { label: "Slide in", value: "slide" },
+        ],
     },
     toastTitleTemplate: {
         hidden: true,

@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.10`
+`0.1.11`
 
 ## What it does
 
@@ -68,6 +68,8 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 | Setting | Options / Type | Default |
 |---|---|---|
+| Entrance animation | None, Slide in | None |
+| Gradient background | Toggle | Off |
 | Font | Nunito, Inter, Poppins, Roboto, Open Sans, Lato, Segoe UI, Arial | Nunito |
 | Title font size | Number (px) | 14 |
 | Channel line font size | Number (px) | 12 |
@@ -103,6 +105,8 @@ The toast window is created hidden (`show: false`) at a minimum height of 113 px
 - `getDisplays()` — calls `electron.screen.getAllDisplays()` and returns display metadata
 - `showToast(options)` — IPC-callable; creates a `BrowserWindow` (frameless, transparent, always-on-top, `focusable: false`) at exact pixel coordinates computed from the target display's bounds plus corner and offsets; loads an inline HTML toast via base64 data URI; auto-closes after the configured duration
 - `startMainProcessPatch(config)` / `updateMainProcessPatch(config)` / `stopMainProcessPatch()` — manage the prototype patch and keep toast config in sync with renderer settings
+
+**Visual styling:** The toast left border emits a soft matching glow (`box-shadow`) in either blurple or green depending on message type. The countdown timer bar carries the same glow. Hovering the toast applies a `scale(1.012)` micro-transform with a short ease transition. An optional "Gradient background" setting switches `--bg` from a flat fill to a subtle 135° gradient; the gradient values are injected per-notification as CSS variables. An optional "Entrance animation" setting adds a corner-aware 220ms `cubic-bezier(.22,1,.36,1)` slide-in from the screen edge; the `@keyframes` block is only emitted into the HTML when the animation is enabled.
 
 **Body text formatting:** Before rendering, the message body is processed for inline highlights. `@mention` patterns are rendered in the accent color. `https://` and `http://` URLs are rendered in the accent color with an underline. Both patterns are resolved in a single regex pass (URLs matched first) so an `@` inside a URL is never double-processed.
 
