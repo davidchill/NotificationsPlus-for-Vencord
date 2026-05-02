@@ -256,9 +256,18 @@ async function createGroupWindow(
     stack.push(groupEntry);
 
     groupWin.on("closed", () => {
-        evictedCounts.set(toastKey, 0);
         const s = toastStacks.get(toastKey);
-        if (s) { const i = s.findIndex(e => e.win === groupWin); if (i !== -1) s.splice(i, 1); }
+        if (s) {
+            const i = s.findIndex(e => e.win === groupWin);
+            if (i !== -1) s.splice(i, 1);
+            if (s.length === 0) {
+                toastStacks.delete(toastKey);
+                evictedCounts.delete(toastKey);
+            } else {
+                evictedCounts.set(toastKey, 0);
+            }
+        }
+        repositionStack(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
     });
 
     const html = buildGroupHtml(count, isDM, font, channelSize);
@@ -363,24 +372,33 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         if (s) {
             const idx = s.findIndex(e => e.win === win);
             if (idx !== -1) s.splice(idx, 1);
+            if (s.length === 0) {
+                toastStacks.delete(toastKey);
+                evictedCounts.delete(toastKey);
+            }
         }
+        repositionStack(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
     });
 
     const html = buildHtml(options.title, options.body, options.icon, effectiveDuration, !!onClicked, options.font, options.titleSize, options.channelSize, options.bodySize, options.entrance, isRight, options.gradientBg);
     await win.loadURL(`data:text/html;base64,${Buffer.from(html).toString("base64")}`);
 
-    // Measure actual rendered height, update the entry, and reposition the whole
-    // stack from scratch. Absolute positioning means interleaved notifications
-    // can't accumulate drift regardless of how they interleave.
+    // Show immediately — page is loaded and ready to render at this point.
+    // Height measurement still runs, but corrects positions silently after the toast is visible.
+    if (!win.isDestroyed()) win.show();
+
+    // Measure actual rendered height and correct the stack layout.
+    // Only triggers repositionStack if height differs from the initial estimate.
     try {
         const contentH: number = await win.webContents.executeJavaScript(
             "document.documentElement.scrollHeight"
         );
-        entry.h = Math.max(TOAST_MIN_H, Math.min(contentH, TOAST_MAX_H));
-        repositionStack(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
+        const measuredH = Math.max(TOAST_MIN_H, Math.min(contentH, TOAST_MAX_H));
+        if (measuredH !== entry.h) {
+            entry.h = measuredH;
+            repositionStack(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
+        }
     } catch { /* window was closed before measurement completed */ }
-
-    if (!win.isDestroyed()) win.show();
 
     // Handle all vc-np:// navigations: toast click and "Open Link" button.
     win.webContents.on("will-navigate", (event, url) => {

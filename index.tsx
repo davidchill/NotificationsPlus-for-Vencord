@@ -214,9 +214,7 @@ function SettingsPanel() {
 
     function handleTest() {
         if (s.useCustomNativeToast) {
-            Native.showToast({
-                title: "NotificationsPlus",
-                body: "Custom toast is working — looking good?",
+            const base = {
                 icon: "",
                 displayIndex: s.toastDisplayIndex,
                 corner: s.toastCorner as ToastOptions["corner"],
@@ -236,7 +234,11 @@ function SettingsPanel() {
                 stackSize: s.toastStackSize,
                 entrance: s.toastEntrance,
                 gradientBg: s.toastGradientBg,
-            });
+            };
+            // Fire a DM toast (no channel context in title → isDMTitle = true)
+            Native.showToast({ ...base, title: "NotificationsPlus", body: "DM test — looking good?" });
+            // Fire a regular server toast (channel context → isDMTitle = false)
+            Native.showToast({ ...base, title: "NotificationsPlus (#general, Testing)", body: "Server notification test — looking good?" });
         } else {
             showNotification({
                 title: "NotificationsPlus",

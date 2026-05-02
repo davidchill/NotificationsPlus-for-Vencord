@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.1.13 — 2026-05-02
+
+### Fixed
+- **Toast stack repositioning on dismiss** — when a toast was dismissed, toasts below it did not move up to fill the gap. Both the regular toast `closed` handler and the group summary window `closed` handler now call `repositionStack()` after removing the entry, so the remaining stack snaps into place immediately.
+- **Send Test Notification fires both toast types** — previously the test button only fired one toast, which was always treated as a DM (plain title, no `(#channel)` context). It now fires two toasts: a plain-title DM toast (green accent, "Direct Message" layout, DM corner/display settings) and a `(#general, Testing)` server toast (blurple accent, category+channel layout, regular corner/display settings). Both positioning configs can be verified in one click.
+
+### Changed
+- **Toast appears before height measurement** — `win.show()` is now called immediately after `loadURL()` resolves rather than after the `executeJavaScript(scrollHeight)` round-trip. The page is fully loaded and ready to paint at that point. Height measurement still runs afterward and calls `repositionStack()` only if the actual height differs from the initial `TOAST_MIN_H` estimate, correcting sibling positions silently. This eliminates ~50–150 ms of unnecessary delay before each toast becomes visible.
+
+### Internal
+- `toastStacks` and `evictedCounts` map entries are now deleted when a stack empties (last toast dismissed), rather than leaving behind an empty array or stale zero count. Prevents unbounded map growth over a long Discord session.
+- Group window `closed` handler now deletes both map entries when the stack is empty after the group is dismissed, rather than unconditionally resetting `evictedCounts` to `0`.
+
+---
+
 ## v0.1.12 — 2026-04-29
 
 ### Changed

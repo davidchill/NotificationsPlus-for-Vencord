@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.12`
+`0.1.13`
 
 ## What it does
 
@@ -94,7 +94,7 @@ On `start()`, the plugin writes four CSS custom properties (`--np-top`, `--np-bo
 
 The sender's avatar is embedded in `toastXml` as a local temp file path; the plugin reads it immediately in the main process and converts it to a base64 data URI so it can be inlined into the toast HTML (a sandboxed `BrowserWindow` cannot load bare file paths from a `data:` page).
 
-The toast window is created hidden (`show: false`) at a minimum height of 113 px. After the HTML loads, the plugin measures `document.documentElement.scrollHeight` via `webContents.executeJavaScript` and resizes the window to fit the content (capped at 400 px), re-anchoring the `y` position for bottom-corner toasts before calling `win.show()`. This means the window always appears at its final size with no visible resize flash. Font selection injects a Google Fonts `<link>` tag into the toast HTML at render time; system font choices (Segoe UI, Arial) skip the network request entirely. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
+The toast window is created hidden (`show: false`) at a minimum height of 113 px. Once the HTML is loaded, `win.show()` is called immediately so the toast appears without delay. `document.documentElement.scrollHeight` is then measured via `webContents.executeJavaScript`; if the actual height differs from the 113 px estimate (e.g. a long message body), `repositionStack()` runs to silently correct sibling positions — the new toast itself is already visible at that point. Content is capped at 400 px. Font selection injects a Google Fonts `<link>` tag into the toast HTML at render time; system font choices (Segoe UI, Arial) skip the network request entirely. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
 
 **Toast stacking:** Up to N toasts can be visible simultaneously per display+corner combination (N = "Max stacked toasts", 1–5, default 3 for server messages). Toasts are ordered newest-closest-to-corner, oldest furthest away. `repositionStack()` recomputes all positions as absolute values from the corner edge on every insert and after every height measurement, eliminating the race-condition drift that relative delta-shifting would produce with concurrent notifications.
 
