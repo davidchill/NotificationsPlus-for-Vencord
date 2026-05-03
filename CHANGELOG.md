@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.1.15 — 2026-05-03
+
+### Added
+- **Smooth exit animation** — toasts now fade out gracefully instead of vanishing. Timer-expired toasts get a gentle 150ms opacity fade. User-clicked or right-click-dismissed toasts get a faster 120ms scale-down + fade, giving tactile feedback that the interaction registered.
+- **Entrance scale effect** — both the fade-in and slide-in entrance animations now include a subtle `scale(0.97) → scale(1)` transition, giving toasts a "popping into existence" feel.
+- **Body text truncation with gradient fade** — long message bodies are now capped at 3 lines (calculated from body font size × 1.4 line-height × 3). When the content overflows, a gradient mask fades the bottom out smoothly instead of clipping hard. The mask is only applied when overflow is detected (via a post-render JS check), so short messages render normally.
+- **Accent color customization** — two new settings under Appearance: "DM accent color" (default `#23a55a`) and "Server accent color" (default `#5865f2`). All color variants (borders, glows, category text, hover backgrounds, icon ring) are derived dynamically from the chosen hex using `hexToRgb()` and `darkenHex()`. Light-mode accent is auto-darkened by 22%.
+- **BrowserWindow pooling** — two toast windows are pre-created at plugin start and kept hidden. When a notification arrives, one is grabbed instantly from the pool — no 100–200ms Chromium renderer process spawn on the hot path. After each acquire, a replacement is created asynchronously via `process.nextTick`. The pool is drained on plugin stop.
+- **Google Fonts embedding** — font CSS and `.woff2` files are fetched once at plugin start (or on font setting change), base64-encoded, and cached in memory. Every toast gets the font inlined as a `<style>` block — zero network requests per notification. If the cache isn't warm yet (first notification after cold start), the toast renders with the system font fallback and the fetch runs in the background for future toasts.
+
+### Changed
+- **Timer bar easing** — the countdown bar now uses `cubic-bezier(0, 0, 0.58, 1)` (ease-out) instead of `linear`. It shrinks faster at first and slows near the end, giving a subtle "time is running out" feel.
+- **Animated stack repositioning** — when a toast is dismissed and remaining toasts reposition, they now slide smoothly into place over ~120ms with a cubic ease-out curve instead of jumping instantly. Small position changes (≤3px, e.g. after height measurement corrections) skip animation and snap directly.
+
+### Performance
+- **Async file reads** — `iconPathToDataUrl` now uses `fs/promises.readFile` instead of the synchronous `fs.readFileSync`, unblocking the main Electron thread during avatar loading. The notification `show()` override delegates to an async `processNotification()` helper.
+- **Eviction loop efficiency** — the toast eviction loop no longer calls `stack.filter()` on every iteration. Uses a `fullCount` counter and backwards array walk instead, eliminating redundant allocations.
+- **Animation timer cleanup** — both toast and group window `closed` handlers now cancel any active repositioning animation interval immediately, preventing orphaned timers from firing `setBounds` on destroyed windows. The `animateWindowTo` destroy branch also properly cleans up the `activeAnimations` WeakMap entry.
+
+### Internal
+- `hexToRgb(hex)` and `darkenHex(hex, factor)` helpers added to `native.ts` for dynamic accent color derivation.
+- `fetchBuffer(url)` added — Node.js `https.get` wrapper with redirect following, used by font cache.
+- `fontCache: Map<string, string>` and `ensureFontCached(fontName)` added — async font fetch, base64 encode, and cache.
+- `windowPool: BrowserWindow[]`, `createPoolWindow()`, `warmPool()`, `acquireWindow()`, `drainPool()` added for BrowserWindow pooling.
+- `closeWithAnimation(win, delayMs)` added — injects `.timeout-exit` CSS class via `executeJavaScript`, waits, then closes.
+- `processNotification(notif)` extracted from the `show()` override as an async helper.
+- `buildHtml` signature extended with `dmAccent`, `serverAccent`, and `fontCss` parameters.
+- `ToastOptions` extended with `dmAccent: string` and `serverAccent: string`.
+- All hardcoded accent color values in `buildHtml` replaced with `rgba()` expressions derived from `hexToRgb()`.
+- Toast `.toast` CSS gains `transition: opacity 0.12s` alongside existing background/transform transitions.
+- `.toast.exiting` and `.toast.timeout-exit` CSS classes added for exit animations.
+- `.body.clipped` CSS class added with `-webkit-mask-image` gradient for overflow fade.
+
+---
+
 ## v0.1.14 — 2026-05-03
 
 ### Added

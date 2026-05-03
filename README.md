@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.14`
+`0.1.15`
 
 ## What it does
 
@@ -77,6 +77,8 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 | Entrance animation | None, Slide in | None |
 | Gradient background | Toggle | Off |
 | Background opacity (0–100) | Number (only visible when gradient is on) | 88 |
+| DM accent color | Hex color string | `#23a55a` |
+| Server accent color | Hex color string | `#5865f2` |
 | Font | Nunito, Inter, Poppins, Roboto, Open Sans, Lato, Segoe UI, Arial | Nunito |
 | Title font size | Number (px) | 14 |
 | Channel line font size | Number (px) | 12 |
@@ -101,7 +103,11 @@ On `start()`, the plugin writes four CSS custom properties (`--np-top`, `--np-bo
 
 The sender's avatar is embedded in `toastXml` as a local temp file path; the plugin reads it immediately in the main process and converts it to a base64 data URI so it can be inlined into the toast HTML (a sandboxed `BrowserWindow` cannot load bare file paths from a `data:` page).
 
-The toast window is created hidden (`show: false`) at a minimum height of 113 px. Once the HTML is loaded, `win.show()` is called immediately so the toast appears without delay. `document.documentElement.scrollHeight` is then measured via `webContents.executeJavaScript`; if the actual height differs from the 113 px estimate (e.g. a long message body), `repositionStack()` runs to silently correct sibling positions — the new toast itself is already visible at that point. Content is capped at 400 px. Font selection injects a Google Fonts `<link>` tag into the toast HTML at render time; system font choices (Segoe UI, Arial) skip the network request entirely. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
+**BrowserWindow pooling:** Two hidden toast windows are pre-created at plugin start. When a notification arrives, one is grabbed from the pool instantly — no 100–200ms Chromium process spawn on the hot path. After each acquire, a replacement is created asynchronously via `process.nextTick`. The pool is drained on plugin stop.
+
+The acquired window is positioned, loaded with HTML via a base64 data URI, and shown immediately. `document.documentElement.scrollHeight` is then measured via `webContents.executeJavaScript`; if the actual height differs from the 113 px estimate (e.g. a long message body), `repositionStack()` runs to silently correct sibling positions — the new toast itself is already visible at that point. Content is capped at 400 px.
+
+**Font handling:** Google Fonts CSS and `.woff2` files are fetched once at plugin start and cached in memory as base64 data URIs. Every toast gets the font inlined as a `<style>` block — zero network requests per notification. System font choices (Segoe UI, Arial) skip the fetch entirely. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
 
 **Toast stacking:** Up to N toasts can be visible simultaneously per display+corner combination (N = "Max stacked toasts", 1–5, default 3 for server messages). Toasts are ordered newest-closest-to-corner, oldest furthest away. `repositionStack()` recomputes all positions as absolute values from the corner edge on every insert and after every height measurement, eliminating the race-condition drift that relative delta-shifting would produce with concurrent notifications.
 
@@ -110,10 +116,10 @@ The toast window is created hidden (`show: false`) at a minimum height of 113 px
 `native.ts` exports:
 
 - `getDisplays()` — calls `electron.screen.getAllDisplays()` and returns display metadata
-- `showToast(options)` — IPC-callable; creates a `BrowserWindow` (frameless, transparent, always-on-top, `focusable: false`) at exact pixel coordinates computed from the target display's bounds plus corner and offsets; loads an inline HTML toast via base64 data URI; auto-closes after the configured duration
+- `showToast(options)` — IPC-callable; acquires a pre-created `BrowserWindow` from the pool (frameless, transparent, always-on-top, `focusable: false`), positions it at exact pixel coordinates computed from the target display's bounds plus corner and offsets, loads an inline HTML toast via base64 data URI, and auto-closes after the configured duration
 - `startMainProcessPatch(config)` / `updateMainProcessPatch(config)` / `stopMainProcessPatch()` — manage the prototype patch and keep toast config in sync with renderer settings
 
-**Visual styling:** The toast left border emits a soft matching glow (`box-shadow`) in either blurple or green depending on message type. The countdown timer bar carries the same glow and fades to transparent at its right (leading) edge via a `linear-gradient`, giving the shrinking bar a soft trailing edge instead of a hard cut. Hovering the toast applies a `scale(1.012)` micro-transform with a short ease transition. A 1px `border-top` in `rgba(255,255,255,.07)` (dark) / `rgba(0,0,0,.05)` (light) creates a "lit from above" highlight that makes the card feel raised. The avatar/icon circle carries a `box-shadow` accent ring matching the DM/server color plus a drop shadow beneath it. When "Gradient background" is enabled, `backdrop-filter: blur(14px) saturate(160%)` is applied alongside a semi-transparent background so desktop content bleeds through subtly; the "Background opacity (0–100)" setting (only visible when gradient is on, default 88) controls the alpha. When the setting is off, the background is a solid `#232428` (dark) / `#ffffff` (light). All toast entrances include at minimum a 150ms opacity fade; the "Slide in" entrance extends this with a corner-aware 220ms `cubic-bezier(.22,1,.36,1)` translate. The `@keyframes` block emitted into the HTML switches between `fade-in` and `slide-in` depending on the setting.
+**Visual styling:** The toast left border emits a soft matching glow (`box-shadow`) in the user-configured accent color. The countdown timer bar carries the same glow, fades to transparent at its right edge via a `linear-gradient`, and uses an ease-out timing curve so it slows near the end. Hovering the toast applies a `scale(1.012)` micro-transform with a short ease transition. A 1px `border-top` in `rgba(255,255,255,.07)` (dark) / `rgba(0,0,0,.05)` (light) creates a "lit from above" highlight that makes the card feel raised. The avatar/icon circle carries a `box-shadow` accent ring matching the DM/server color plus a drop shadow beneath it. When "Gradient background" is enabled, `backdrop-filter: blur(14px) saturate(160%)` is applied alongside a semi-transparent background so desktop content bleeds through subtly; the "Background opacity (0–100)" setting (only visible when gradient is on, default 88) controls the alpha. When the setting is off, the background is a solid `#232428` (dark) / `#ffffff` (light). All toast entrances include a `scale(0.97) → scale(1)` transition plus at minimum a 150ms opacity fade; the "Slide in" entrance extends this with a corner-aware 220ms `cubic-bezier(.22,1,.36,1)` translate. Toasts exit with a smooth animation: clicked/dismissed toasts scale down to 0.96 and fade over 120ms; timer-expired toasts fade out over 150ms. Long message bodies are capped at 3 lines with a gradient mask that fades the bottom when content overflows. DM and server accent colors are user-configurable; all color variants (borders, glows, category text, hover states) are derived dynamically from the chosen hex.
 
 **Body text formatting:** Before rendering, the message body is processed for inline highlights. `@mention` patterns are rendered in the accent color. `https://` and `http://` URLs are rendered in the accent color with an underline. Both patterns are resolved in a single regex pass (URLs matched first) so an `@` inside a URL is never double-processed.
 

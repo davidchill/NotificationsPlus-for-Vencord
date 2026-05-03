@@ -45,6 +45,7 @@ function getToastConfig(): ToastConfig {
         toastDmPersist, toastDmGroupThreshold,
         toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick, toastIconUrl,
         toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg, toastBgOpacity,
+        toastDmAccent, toastServerAccent,
     } = settings.store;
     return {
         displayIndex: toastDisplayIndex,
@@ -70,6 +71,8 @@ function getToastConfig(): ToastConfig {
         entrance: toastEntrance,
         gradientBg: toastGradientBg,
         bgOpacity: toastBgOpacity,
+        dmAccent: toastDmAccent,
+        serverAccent: toastServerAccent,
     };
 }
 
@@ -84,6 +87,7 @@ function applyToastPatch() {
             toastDmPersist, toastDmGroupThreshold,
             toastDuration, toastTitleTemplate, toastBodyTemplate, toastIconUrl,
             toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg, toastBgOpacity,
+            toastDmAccent, toastServerAccent,
         } = settings.store;
 
         Native.showToast({
@@ -109,6 +113,8 @@ function applyToastPatch() {
             entrance: toastEntrance,
             gradientBg: toastGradientBg,
             bgOpacity: toastBgOpacity,
+            dmAccent: toastDmAccent,
+            serverAccent: toastServerAccent,
         });
 
         return { onclick: null, onclose: null, close() { } };
@@ -237,6 +243,8 @@ function SettingsPanel() {
                 entrance: s.toastEntrance,
                 gradientBg: s.toastGradientBg,
                 bgOpacity: s.toastBgOpacity,
+                dmAccent: s.toastDmAccent,
+                serverAccent: s.toastServerAccent,
             };
             // Fire a DM toast (no channel context in title → isDMTitle = true)
             Native.showToast({ ...base, title: "NotificationsPlus", body: "DM test — looking good?" });
@@ -389,6 +397,20 @@ function SettingsPanel() {
                             <NumInput value={s.toastBgOpacity} min={0} onChange={v => set("toastBgOpacity", Math.max(0, Math.min(100, v)), updateToast)} />
                         </Cell>
                     )}
+                    <Cell label="DM accent color">
+                        <TextInput
+                            value={s.toastDmAccent}
+                            onChange={v => set("toastDmAccent", v, updateToast)}
+                            placeholder="#23a55a"
+                        />
+                    </Cell>
+                    <Cell label="Server accent color">
+                        <TextInput
+                            value={s.toastServerAccent}
+                            onChange={v => set("toastServerAccent", v, updateToast)}
+                            placeholder="#5865f2"
+                        />
+                    </Cell>
                     <Cell label="Font family">
                         <Select
                             options={FONT_OPTIONS}
@@ -614,6 +636,18 @@ const settings = definePluginSettings({
         description: "Icon URL override",
         type: OptionType.STRING,
         default: "",
+    },
+    toastDmAccent: {
+        hidden: true,
+        description: "Accent color for DM toasts",
+        type: OptionType.STRING,
+        default: "#23a55a",
+    },
+    toastServerAccent: {
+        hidden: true,
+        description: "Accent color for server toasts",
+        type: OptionType.STRING,
+        default: "#5865f2",
     },
     toastFont: {
         hidden: true,
