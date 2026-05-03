@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.1.16 — 2026-05-03
+
+### Performance
+- **Pre-rendered template pool (major)** — eliminated `loadURL` per notification (was 50–150ms). Pool windows now pre-load a single static `TEMPLATE_HTML` page at creation time. When a notification arrives, `window.__npUpdate(data)` is called via `executeJavaScript` (~5–20ms) to inject all per-toast content and CSS custom properties without reloading the page. `__npUpdate` returns `document.documentElement.scrollHeight` directly, collapsing the content-update and height-measurement steps into one IPC round-trip. The toast is shown at the correct position before the first paint — no post-show height correction jump.
+- **Icon cache** — `iconCache` Map (max 50 entries, LRU-style eviction) avoids repeated `readFile` + base64-encode for the same avatar during message bursts. Cleared on plugin stop.
+- **repositionStack debounce** — `scheduleReposition()` wraps `repositionStack` with a `setTimeout(fn, 0)` debounce via a `pendingReposition` Map. Concurrent `repositionStack` calls for the same stack key during a notification burst are collapsed into one, eliminating `win.setBounds()` / `SetWindowPos` kernel call storms. All pending timers are cleared on plugin stop.
+- **Pool size 2 → 4** — avoids a cold `createPoolWindow()` call on the 3rd and 4th rapid successive notifications.
+- **Font fetch parallelization** — replaced sequential `for await` loop with `Promise.all`, cutting cold font load from `N × RTT` to `1 × RTT` when multiple font files must be fetched.
+- **Animation timing fixed** — animation class is now applied inside `requestAnimationFrame` within `__npUpdate`. Electron defers `rAF` callbacks in hidden windows, so the animation starts from the first visible frame after `win.show()` — no clipped leading frames.
+
+### Bug fix
+- **Template literal `\'` escape** — the `onerror` attribute in the previous `innerHTML`-concatenated icon HTML used `\'` inside a TypeScript backtick template literal. The JS engine consumes the backslash, producing unescaped single quotes inside a single-quoted JS string — a syntax error that silently prevented the entire `<script>` block from parsing and caused `window.__npUpdate` to be undefined, showing blank toasts with only the default CSS. Fixed by replacing `innerHTML` string concatenation with explicit DOM element creation (`document.createElement`, `appendChild`), which avoids all string-escaping issues.
+
+### Internal
+- `TEMPLATE_HTML` / `TEMPLATE_B64` — static pre-rendered template replacing the old `buildHtml()` function. All dynamic values are expressed as CSS custom properties (`--ar`, `--ag`, `--ab`, `--ts`, etc.) updated per-toast via `__npUpdate`.
+- `window.__npUpdate(data)` — JS function embedded in the template that receives a serialized `UpdateData` object, updates all DOM content and CSS custom properties, applies animation class via `rAF`, and returns `scrollHeight`.
+- `buildUpdateData(options, effectiveDuration, clickable, isRight, fontCss)` — new function producing the `UpdateData` JSON object passed to `__npUpdate`, replacing `buildHtml` parameter threading.
+- `poolReady: WeakMap<BrowserWindow, Promise<void>>` — tracks each pool window's `loadURL` promise so `acquireWindow` can `await` template-load completion before returning the window.
+- `iconCache: Map<string, string>` and `ICON_CACHE_MAX = 50` added to `native.ts`.
+- `pendingReposition: Map<string, ReturnType<typeof setTimeout>>` and `scheduleReposition()` added to `native.ts`.
+- `stopMainProcessPatch` now clears `iconCache`, cancels all pending `pendingReposition` timers, and clears the map.
+
+---
+
 ## v0.1.15 — 2026-05-03
 
 ### Added
