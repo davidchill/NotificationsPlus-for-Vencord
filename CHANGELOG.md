@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.1.14 — 2026-05-03
+
+### Added
+- **Frosted glass background** — when "Gradient background" is enabled, the toast now applies `backdrop-filter: blur(14px) saturate(160%)` with a semi-transparent background so the desktop and windows behind it bleed through subtly. Replaces the previous subtle solid/gradient fill with genuine depth.
+- **Background opacity setting** — a new "Background opacity (0–100)" input (default 88) controls the alpha of the frosted glass background. Only shown in the settings panel when "Gradient background" is on. The hover background alpha is derived from this value (+0.06, clamped to 1.0) so the hover state always reads as slightly more solid than the base.
+- **Always-on entrance fade** — the toast now fades in from `opacity: 0` over 150ms regardless of entrance animation setting. Previously, "None" entrance caused the window to snap visible with no transition. The "Slide in" animation continues to handle opacity as part of its own `@keyframes`; the two modes share the same CSS property slot so there is no conflict.
+
+### Changed
+- **Icon glow ring** — the avatar/icon circle now has a `box-shadow` accent ring (`0 0 0 2px <accent-glow>`) plus a drop shadow beneath it. Server message toasts use a blurple ring; DM toasts use green. Light mode uses a reduced-opacity variant.
+- **Top highlight border** — added `border-top: 1px solid rgba(255,255,255,.07)` in dark mode / `rgba(0,0,0,.05)` in light mode. Creates a "lit from above" edge that makes the toast card feel raised rather than floating on nothing.
+- **Timer bar gradient edge** — the countdown bar background changed from `var(--accent)` to `linear-gradient(to right, var(--accent) 55%, transparent 100%)`. The right (leading/shrinking) edge now fades to transparent instead of cutting off abruptly.
+- **Stronger default background** — solid (non-gradient) toast background darkened from `#2b2d31` to `#232428` for better perceived contrast between card and content.
+- **Hover background is now mode-aware** — `--bg-hover` is now a dynamic CSS variable computed per-toast rather than a hardcoded `#32353b`. In frosted glass mode it uses a semi-transparent value; in solid mode it uses an opaque dark/light value appropriate to the theme.
+
+### Internal
+- `op` / `hoverOp` computed variables added to `buildHtml`; gradient stop alpha values and hover alpha are derived from `bgOpacity` at render time.
+- `bgHoverDark` / `bgHoverLight` computed variables replace the hardcoded `--bg-hover` token.
+- `backdropCss` computed variable added; emits `backdrop-filter` + `-webkit-backdrop-filter` only when `gradientBg` is true.
+- `--icon-shadow` and `--top-highlight` CSS variables added to both `:root` and the `@media(prefers-color-scheme:light)` override block.
+- `slideKeyframes` now always emits a `@keyframes` block (`fade-in` when entrance is "none", `slide-in` when entrance is "slide"); `slideAnimation` always sets `animation:` on `.toast`.
+- `ToastOptions` extended with `bgOpacity: number`; flows through `ToastConfig` automatically.
+- `buildHtml` signature extended with `bgOpacity: number`.
+
+---
+
 ## v0.1.13 — 2026-05-02
 
 ### Fixed

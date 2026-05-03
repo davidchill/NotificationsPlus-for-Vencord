@@ -44,7 +44,7 @@ function getToastConfig(): ToastConfig {
         toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
         toastDmPersist, toastDmGroupThreshold,
         toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick, toastIconUrl,
-        toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg,
+        toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg, toastBgOpacity,
     } = settings.store;
     return {
         displayIndex: toastDisplayIndex,
@@ -69,6 +69,7 @@ function getToastConfig(): ToastConfig {
         stackSize: toastStackSize,
         entrance: toastEntrance,
         gradientBg: toastGradientBg,
+        bgOpacity: toastBgOpacity,
     };
 }
 
@@ -82,7 +83,7 @@ function applyToastPatch() {
             toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
             toastDmPersist, toastDmGroupThreshold,
             toastDuration, toastTitleTemplate, toastBodyTemplate, toastIconUrl,
-            toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg,
+            toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg, toastBgOpacity,
         } = settings.store;
 
         Native.showToast({
@@ -107,6 +108,7 @@ function applyToastPatch() {
             stackSize: toastStackSize,
             entrance: toastEntrance,
             gradientBg: toastGradientBg,
+            bgOpacity: toastBgOpacity,
         });
 
         return { onclick: null, onclose: null, close() { } };
@@ -234,6 +236,7 @@ function SettingsPanel() {
                 stackSize: s.toastStackSize,
                 entrance: s.toastEntrance,
                 gradientBg: s.toastGradientBg,
+                bgOpacity: s.toastBgOpacity,
             };
             // Fire a DM toast (no channel context in title → isDMTitle = true)
             Native.showToast({ ...base, title: "NotificationsPlus", body: "DM test — looking good?" });
@@ -381,6 +384,11 @@ function SettingsPanel() {
                             onChange={v => set("toastGradientBg", v, updateToast)}
                         />
                     </Cell>
+                    {s.toastGradientBg && (
+                        <Cell label="Background opacity (0–100)">
+                            <NumInput value={s.toastBgOpacity} min={0} onChange={v => set("toastBgOpacity", Math.max(0, Math.min(100, v)), updateToast)} />
+                        </Cell>
+                    )}
                     <Cell label="Font family">
                         <Select
                             options={FONT_OPTIONS}
@@ -573,6 +581,12 @@ const settings = definePluginSettings({
         description: "Subtle gradient background on toast",
         type: OptionType.BOOLEAN,
         default: false,
+    },
+    toastBgOpacity: {
+        hidden: true,
+        description: "Background opacity when gradient is enabled (0–100)",
+        type: OptionType.NUMBER,
+        default: 88,
     },
     toastEntrance: {
         hidden: true,

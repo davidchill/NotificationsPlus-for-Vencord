@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.1.13`
+`0.1.14`
 
 ## What it does
 
@@ -13,6 +13,12 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 **Native OS toasts:** An optional toggle intercepts Discord's native OS notifications and replaces them with a custom Electron `BrowserWindow` — a frameless, always-on-top window you control completely. This enables monitor selection, per-corner positioning, click-to-navigate, custom content templates, toast stacking, DM-specific positioning and persistence, and icon overrides that the OS notification API doesn't support.
 
 **Sound suppression:** A standalone toggle that mutes Discord's notification ping audio without touching the visual notification.
+
+## Performance note
+
+> **Set per-server notifications to "Only @mentions" on servers you don't need to track closely.**
+>
+> Discord fires a notification for every qualifying message. If a busy server is set to "All Messages", every message in every channel will trigger a toast, which creates a continuous stream of `BrowserWindow` creations and destructions. This can noticeably impact performance over time. Keeping high-traffic servers on "Only @mentions" ensures only genuinely relevant messages reach the plugin. You can configure this per-server in Discord's notification settings (right-click the server icon → Notification Settings).
 
 ## Settings
 
@@ -70,6 +76,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 |---|---|---|
 | Entrance animation | None, Slide in | None |
 | Gradient background | Toggle | Off |
+| Background opacity (0–100) | Number (only visible when gradient is on) | 88 |
 | Font | Nunito, Inter, Poppins, Roboto, Open Sans, Lato, Segoe UI, Arial | Nunito |
 | Title font size | Number (px) | 14 |
 | Channel line font size | Number (px) | 12 |
@@ -106,7 +113,7 @@ The toast window is created hidden (`show: false`) at a minimum height of 113 px
 - `showToast(options)` — IPC-callable; creates a `BrowserWindow` (frameless, transparent, always-on-top, `focusable: false`) at exact pixel coordinates computed from the target display's bounds plus corner and offsets; loads an inline HTML toast via base64 data URI; auto-closes after the configured duration
 - `startMainProcessPatch(config)` / `updateMainProcessPatch(config)` / `stopMainProcessPatch()` — manage the prototype patch and keep toast config in sync with renderer settings
 
-**Visual styling:** The toast left border emits a soft matching glow (`box-shadow`) in either blurple or green depending on message type. The countdown timer bar carries the same glow. Hovering the toast applies a `scale(1.012)` micro-transform with a short ease transition. An optional "Gradient background" setting switches `--bg` from a flat fill to a subtle 135° gradient; the gradient values are injected per-notification as CSS variables. An optional "Entrance animation" setting adds a corner-aware 220ms `cubic-bezier(.22,1,.36,1)` slide-in from the screen edge; the `@keyframes` block is only emitted into the HTML when the animation is enabled.
+**Visual styling:** The toast left border emits a soft matching glow (`box-shadow`) in either blurple or green depending on message type. The countdown timer bar carries the same glow and fades to transparent at its right (leading) edge via a `linear-gradient`, giving the shrinking bar a soft trailing edge instead of a hard cut. Hovering the toast applies a `scale(1.012)` micro-transform with a short ease transition. A 1px `border-top` in `rgba(255,255,255,.07)` (dark) / `rgba(0,0,0,.05)` (light) creates a "lit from above" highlight that makes the card feel raised. The avatar/icon circle carries a `box-shadow` accent ring matching the DM/server color plus a drop shadow beneath it. When "Gradient background" is enabled, `backdrop-filter: blur(14px) saturate(160%)` is applied alongside a semi-transparent background so desktop content bleeds through subtly; the "Background opacity (0–100)" setting (only visible when gradient is on, default 88) controls the alpha. When the setting is off, the background is a solid `#232428` (dark) / `#ffffff` (light). All toast entrances include at minimum a 150ms opacity fade; the "Slide in" entrance extends this with a corner-aware 220ms `cubic-bezier(.22,1,.36,1)` translate. The `@keyframes` block emitted into the HTML switches between `fade-in` and `slide-in` depending on the setting.
 
 **Body text formatting:** Before rendering, the message body is processed for inline highlights. `@mention` patterns are rendered in the accent color. `https://` and `http://` URLs are rendered in the accent color with an underline. Both patterns are resolved in a single regex pass (URLs matched first) so an `@` inside a URL is never double-processed.
 

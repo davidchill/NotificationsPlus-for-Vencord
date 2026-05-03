@@ -36,6 +36,7 @@ export interface ToastOptions {
     stackSize: number;
     entrance: "none" | "slide";
     gradientBg: boolean;
+    bgOpacity: number;
 }
 
 export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
@@ -80,7 +81,7 @@ function formatBody(text: string): string {
     );
 }
 
-function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean, font: string, titleSize: number, channelSize: number, bodySize: number, entrance: string, isRight: boolean, gradientBg: boolean) {
+function buildHtml(title: string, body: string, icon: string, duration: number, clickable: boolean, font: string, titleSize: number, channelSize: number, bodySize: number, entrance: string, isRight: boolean, gradientBg: boolean, bgOpacity: number) {
     const durationMs = duration * 1000;
     const iconContent = icon
         ? `<img class="icon" src="${escapeHtml(icon)}" onerror="this.style.display='none'" />`
@@ -149,21 +150,28 @@ function buildHtml(title: string, body: string, icon: string, duration: number, 
     const slideFrom   = isRight ? "calc(100% + 20px)" : "calc(-100% - 20px)";
     const slideKeyframes = entrance === "slide"
         ? `@keyframes slide-in{from{transform:translateX(${slideFrom});opacity:0}to{transform:translateX(0);opacity:1}}`
-        : "";
-    const slideAnimation = entrance === "slide" ? "animation:slide-in 220ms cubic-bezier(.22,1,.36,1) both;" : "";
-    const bgDark  = gradientBg ? "linear-gradient(135deg,#2b2d31 0%,#2e303a 100%)" : "#2b2d31";
-    const bgLight = gradientBg ? "linear-gradient(135deg,#ffffff 0%,#f4f4f8 100%)" : "#ffffff";
+        : `@keyframes fade-in{from{opacity:0}to{opacity:1}}`;
+    const slideAnimation = entrance === "slide"
+        ? "animation:slide-in 220ms cubic-bezier(.22,1,.36,1) both;"
+        : "animation:fade-in 150ms ease both;";
+    const op           = gradientBg ? (Math.max(0, Math.min(100, bgOpacity)) / 100).toFixed(2) : "1";
+    const hoverOp      = gradientBg ? Math.min(1, Math.max(0, Math.min(100, bgOpacity)) / 100 + 0.06).toFixed(2) : "1";
+    const bgDark       = gradientBg ? `linear-gradient(135deg,rgba(30,31,36,${op}) 0%,rgba(36,38,46,${op}) 100%)` : "#232428";
+    const bgLight      = gradientBg ? `linear-gradient(135deg,rgba(252,252,255,${op}) 0%,rgba(242,243,248,${op}) 100%)` : "#ffffff";
+    const bgHoverDark  = gradientBg ? `rgba(44,46,52,${hoverOp})` : "#2a2c31";
+    const bgHoverLight = gradientBg ? `rgba(237,238,242,${hoverOp})` : "#f2f3f5";
+    const backdropCss  = gradientBg ? "backdrop-filter:blur(14px) saturate(160%);-webkit-backdrop-filter:blur(14px) saturate(160%);" : "";
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8">${fontLink}<style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:auto;background:transparent;overflow:hidden}
 body{font-family:"${font}","Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased}
-:root{--bg:${bgDark};--bg-hover:#32353b;--title:#f2f3f5;--text:#b5bac1;--border:${borderDark};--shadow:0 16px 48px rgba(0,0,0,.65),0 0 0 1px var(--border);--glow:${glowDark};--accent:${accentDark};--category:${catDark}}
-@media(prefers-color-scheme:light){:root{--bg:${bgLight};--bg-hover:#f2f3f5;--title:#060607;--text:#4e5058;--border:${borderLight};--shadow:0 8px 32px rgba(0,0,0,.18),0 0 0 1px var(--border);--glow:${glowLight};--accent:${accentLight};--category:${catLight}}}
+:root{--bg:${bgDark};--bg-hover:${bgHoverDark};--title:#f2f3f5;--text:#b5bac1;--border:${borderDark};--shadow:0 16px 48px rgba(0,0,0,.65),0 0 0 1px var(--border);--glow:${glowDark};--accent:${accentDark};--category:${catDark};--icon-shadow:0 0 0 2px ${glowDark},0 2px 10px rgba(0,0,0,.55);--top-highlight:rgba(255,255,255,.07)}
+@media(prefers-color-scheme:light){:root{--bg:${bgLight};--bg-hover:${bgHoverLight};--title:#060607;--text:#4e5058;--border:${borderLight};--shadow:0 8px 32px rgba(0,0,0,.18),0 0 0 1px var(--border);--glow:${glowLight};--accent:${accentLight};--category:${catLight};--icon-shadow:0 0 0 2px ${glowLight},0 2px 6px rgba(0,0,0,.18);--top-highlight:rgba(0,0,0,.05)}}
 ${slideKeyframes}
-.toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;min-height:${TOAST_MIN_H}px;box-shadow:var(--shadow),var(--glow);position:relative;cursor:pointer;overflow:hidden;user-select:none;transition:background 0.12s,transform 0.1s;${slideAnimation}}
+.toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);border-top:1px solid var(--top-highlight);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;min-height:${TOAST_MIN_H}px;box-shadow:var(--shadow),var(--glow);position:relative;cursor:pointer;overflow:hidden;user-select:none;transition:background 0.12s,transform 0.1s;${backdropCss}${slideAnimation}}
 .toast:hover{background:var(--bg-hover);transform:scale(1.012)}
-.icon-wrap{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:${iconBg};display:flex;align-items:center;justify-content:center;overflow:hidden}
+.icon-wrap{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:${iconBg};display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:var(--icon-shadow)}
 .icon{width:44px;height:44px;object-fit:cover;border-radius:50%}
 .content{flex:1;min-width:0;padding-top:2px}
 .title{font-size:${titleSize}px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
@@ -171,7 +179,7 @@ ${slideKeyframes}
 .channel{font-size:${channelSize}px;font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
 .body{font-size:${bodySize}px;line-height:1.4;color:var(--text);overflow-wrap:break-word;word-break:break-word;${bodyExtraPad}}
 .mention{color:var(--accent)}.link{color:var(--accent);text-decoration:underline}
-.bar{position:absolute;bottom:0;left:0;height:6px;background:var(--accent);animation:shrink ${durationMs}ms linear forwards;box-shadow:0 0 8px var(--accent),0 0 2px var(--accent)}
+.bar{position:absolute;bottom:0;left:0;height:6px;background:linear-gradient(to right,var(--accent) 55%,transparent 100%);animation:shrink ${durationMs}ms linear forwards;box-shadow:0 0 8px var(--accent),0 0 2px var(--accent)}
 @keyframes shrink{from{width:100%}to{width:0%}}
 .open-link-btn{position:absolute;bottom:14px;right:12px;font-size:10px;font-weight:600;color:var(--accent);background:transparent;border:1px solid var(--accent);border-radius:4px;padding:2px 7px;text-decoration:none;cursor:pointer;opacity:.8;letter-spacing:.02em;transition:opacity .15s,background .15s}
 .open-link-btn:hover{opacity:1;background:${hoverBg}}
@@ -380,7 +388,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         repositionStack(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
     });
 
-    const html = buildHtml(options.title, options.body, options.icon, effectiveDuration, !!onClicked, options.font, options.titleSize, options.channelSize, options.bodySize, options.entrance, isRight, options.gradientBg);
+    const html = buildHtml(options.title, options.body, options.icon, effectiveDuration, !!onClicked, options.font, options.titleSize, options.channelSize, options.bodySize, options.entrance, isRight, options.gradientBg, options.bgOpacity);
     await win.loadURL(`data:text/html;base64,${Buffer.from(html).toString("base64")}`);
 
     // Show immediately — page is loaded and ready to render at this point.
