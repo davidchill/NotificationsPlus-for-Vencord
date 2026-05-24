@@ -31,6 +31,10 @@ export interface ToastOptions {
     title: string;
     body: string;
     icon: string;
+    // Optional raw filesystem path to an avatar. When set and `icon` is empty,
+    // showToastInternal reads + base64-encodes the file only AFTER the burst-skip
+    // check passes, so dropped bursts don't pay the disk I/O.
+    iconPath?: string;
     displayIndex: number;
     corner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
     offsetX: number;
@@ -385,7 +389,7 @@ async function createGroupWindow(
         skipTaskbar: true, resizable: false, movable: false, focusable: false,
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
-    const groupEntry: StackEntry = { win: groupWin, h: GROUP_H, isGroup: true };
+    const groupEntry: StackEntry = { win: groupWin, h: GROUP_H, isGroup: true, addedAt: Date.now() };
     stack.push(groupEntry);
 
     groupWin.on("closed", () => {
@@ -434,9 +438,41 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // them directly here without re-clamping per toast.
     const maxStack = isDM ? options.dmGroupThreshold : options.stackSize;
 
+    // ── Burst-skip ───────────────────────────────────────────────────────────
+    // If the stack is already at cap and the oldest visible toast is still fresh
+    // (within BURST_THRESHOLD_MS), we're in a message burst — e.g. notifications=All
+    // on an active server. Creating a new toast here would just evict an existing
+    // one before the user could read it, burning a BrowserWindow create, IPC update,
+    // and DWM compositor cycle for ~100 ms of visibility. Skip the new toast; for
+    // DMs we feed the group counter so the "N earlier messages" count stays accurate.
+    const fullCountAtArrival = stack.reduce((n, e) => n + (e.isGroup ? 0 : 1), 0);
+    if (fullCountAtArrival >= maxStack) {
+        let oldestAddedAt = Infinity;
+        for (const e of stack) {
+            if (!e.isGroup && e.addedAt < oldestAddedAt) oldestAddedAt = e.addedAt;
+        }
+        if (Date.now() - oldestAddedAt < BURST_THRESHOLD_MS) {
+            if (isDM) {
+                const newCount = (evictedCounts.get(toastKey) ?? 0) + 1;
+                evictedCounts.set(toastKey, newCount);
+                const display = screen.getAllDisplays()[displayIndex] ?? screen.getPrimaryDisplay();
+                const dBounds = display.bounds;
+                const dIsRight = corner.endsWith("right");
+                const dIsBottom = corner.startsWith("bottom");
+                const existingGroup = stack.find(e => e.isGroup);
+                if (existingGroup) {
+                    updateGroupLabel(existingGroup, newCount);
+                } else {
+                    await createGroupWindow(toastKey, newCount, true, options.font, options.channelSize, dBounds, dIsBottom, dIsRight, offsetX, offsetY, options.alwaysOnTop ?? true);
+                }
+            }
+            return -1;
+        }
+    }
+
     // Evict the oldest full (non-group) toast(s) to make room.
     // For DMs, evicted toasts feed a group summary window instead of being silently dropped.
-    let fullCount = stack.reduce((n, e) => n + (e.isGroup ? 0 : 1), 0);
+    let fullCount = fullCountAtArrival;
     while (fullCount >= maxStack) {
         let oldestIdx = -1;
         for (let i = stack.length - 1; i >= 0; i--) {
@@ -479,9 +515,16 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // Pool windows pre-load the template HTML, so acquireWindow resolves almost instantly
     // when the pool is warm. executeJavaScript then updates content in ~5-20ms vs the
     // previous loadURL approach which took 50-150ms per notification.
-    const win = await acquireWindow();
+    //
+    // Resolve the avatar in parallel with the window acquire: both touch independent
+    // resources (disk vs pool) and used to run back-to-back. The icon-read is also
+    // deferred until *after* the burst-skip check above, so dropped bursts pay no I/O.
+    const iconPromise = (!options.icon && options.iconPath)
+        ? iconPathToDataUrl(options.iconPath)
+        : Promise.resolve(options.icon);
+    const [resolvedIcon, win] = await Promise.all([iconPromise, acquireWindow()]);
 
-    const entry: StackEntry = { win, h: TOAST_MIN_H, isGroup: false };
+    const entry: StackEntry = { win, h: TOAST_MIN_H, isGroup: false, addedAt: Date.now() };
     stack.unshift(entry);
 
     win.on("closed", () => {
@@ -502,7 +545,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // Lazy-fire font fetch for next time; ensureFontCached itself already logs errors.
     if (!fontCss && GOOGLE_FONTS[options.font]) ensureFontCached(options.font).catch(() => {});
 
-    const updateData = buildUpdateData(options, effectiveDuration, !!onClicked, isRight, fontCss);
+    const updateData = buildUpdateData({ ...options, icon: resolvedIcon }, effectiveDuration, !!onClicked, isRight, fontCss);
 
     // sendToastUpdate combines content update and height measurement into a single
     // round-trip. Uses preload IPC when available (faster, structured clone), falls
@@ -512,11 +555,23 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
 
     entry.h = measuredH;
     if (!win.isDestroyed()) {
-        // Reposition with the measured height before showing — toast appears at the right
-        // position immediately with no post-show correction jump.
+        // Position the NEW toast at its exact slot immediately so it appears at the
+        // correct position with no post-show correction jump. Since unshift puts it at
+        // stack[0] (topmost), its position is the corner anchor itself — no preceding
+        // heights to sum, so we can compute it without iterating the stack.
+        //
+        // The shifts of *existing* toasts (to make room) are deferred to scheduleReposition
+        // so concurrent arrivals in the same tick coalesce into a single full-stack pass.
+        // animateWindowTo on the not-yet-visible new window uses setBounds-immediate
+        // (no animation), matching the previous synchronous-reposition behavior for it.
         const aot = options.alwaysOnTop ?? true;
         win.setAlwaysOnTop(aot);
-        repositionStack(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
+        const newX = Math.round(isRight ? bounds.x + bounds.width - TOAST_W - offsetX : bounds.x + offsetX);
+        const newY = Math.round(isBottom
+            ? bounds.y + bounds.height - measuredH - offsetY
+            : bounds.y + offsetY);
+        animateWindowTo(win, newX, newY, TOAST_W, measuredH);
+        scheduleReposition(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
         // When alwaysOnTop is off, use showInactive() (SW_SHOWNA on Windows) so the
         // toast is rendered without activating it — the currently active window stays
         // in front rather than the toast popping over it.
@@ -640,7 +695,13 @@ async function iconPathToDataUrl(src: string): Promise<string> {
 // Tracks the visible toast stack per display+corner. Keyed by "${displayIndex}-${corner}".
 // Index 0 = newest (closest to corner), last index = oldest.
 // Group entry (isGroup: true) is always last when present.
-interface StackEntry { win: BrowserWindow; h: number; isGroup: boolean; }
+interface StackEntry { win: BrowserWindow; h: number; isGroup: boolean; addedAt: number; }
+
+// Burst-skip window: if the oldest visible toast in the stack is younger than this
+// AND the stack is at cap, a new arrival is dropped (or fed to the DM group counter)
+// instead of churning the window pool. 500 ms matches the perceptual threshold where
+// a toast would be evicted before the user could realistically read it.
+const BURST_THRESHOLD_MS = 500;
 const toastStacks = new Map<string, StackEntry[]>();
 // Count of DM toasts evicted from the visible stack without being dismissed by the user.
 // When > 0 a compact group summary window is shown at the bottom of that stack.
@@ -912,7 +973,7 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
 
     let title = stripBidi(notif.title ?? "");
     let body = stripBidi(notif.body ?? "");
-    let avatarIcon = "";
+    let avatarPath = "";
 
     const xml = (notif as any).toastXml as string | undefined;
     if (xml) {
@@ -921,8 +982,9 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
             title = extracted.title;
             body = extracted.body;
         }
-        const rawPath = extractImageFromToastXml(xml);
-        if (rawPath) avatarIcon = await iconPathToDataUrl(rawPath);
+        // Defer the read+base64 to showToastInternal — if this toast loses the
+        // burst-skip check, the disk I/O is avoided entirely.
+        avatarPath = extractImageFromToastXml(xml);
     }
 
     const notifInstance = notif as any;
@@ -952,7 +1014,10 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
         ...cfg,
         title: cfg.titleTemplate.replace("{title}", title),
         body: cfg.bodyTemplate.replace("{body}", body),
-        icon: cfg.iconUrl || avatarIcon,
+        icon: cfg.iconUrl || "",
+        // If user has a custom iconUrl override, no path-read is needed. Otherwise pass
+        // the raw path so showToastInternal resolves it only on the surviving path.
+        iconPath: cfg.iconUrl ? "" : avatarPath,
     }, onClicked);
 }
 

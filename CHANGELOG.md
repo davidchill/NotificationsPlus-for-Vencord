@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.1 — 2026-05-24
+
+Focused burst-performance pass targeting the "notifications=All on a busy server" scenario where a tight stream of arrivals previously caused window-pool churn, redundant disk I/O, and overlapping reposition animations. Three changes work together to make the hot path do nothing for arrivals that the user can't perceive anyway.
+
+### Changed
+
+- **Burst-skip** — `showToastInternal` now exits early when the stack is at cap **and** the oldest visible toast is still younger than `BURST_THRESHOLD_MS` (500 ms). For DMs, the skipped toast bumps the existing "N earlier messages" group counter (no information loss). For servers, it is dropped silently. Eliminates the create→show→evict→close churn that previously fired for every burst arrival past the cap; in a 10-toast burst with `stackSize=3` this is ~7 BrowserWindow allocations + DWM compositor cycles avoided.
+- **Deferred avatar I/O** — `processNotification` no longer calls `iconPathToDataUrl` inline. The raw path is passed to `showToastInternal` as a new `iconPath` field on `ToastOptions` and resolved only **after** the burst-skip check passes, so dropped bursts pay no disk read. The resolve is also parallelized with `acquireWindow` via `Promise.all` so the two independent waits no longer serialize.
+- **Single-window position + scheduled full reposition** — the new toast's slot is computed and applied directly (it's always at the corner, no preceding heights to sum), and the shifts of existing toasts are routed through the existing per-stack `scheduleReposition` coalescer so concurrent arrivals in the same tick collapse into one full-stack pass instead of N.
+
+### Internal
+
+- New `BURST_THRESHOLD_MS = 500` constant in `native.ts`.
+- `StackEntry` interface gains an `addedAt: number` field set at every push site (both `showToastInternal` and `createGroupWindow`). The burst-skip freshness check reads this without any timing-source allocations.
+- `ToastOptions` gains an optional `iconPath?: string` field. `ToastConfig` is unchanged — `processNotification` derives `iconPath` per-call from the `toastXml` extraction. The renderer-side `Native.showToast` IPC path and `handleTest` flow continue passing only `icon` and are unaffected.
+- Settings panel, all visual settings, sound suppression, and the v0.2.0 preload/IPC and pool/animation systems are unchanged.
+
 ## v0.2.0 — 2026-05-24
 
 This release is a focused tech-stack pass: every recommendation from a full architecture review (plus three follow-up polish items) landed in one batch. No user-facing behavior changes by default — but the hot path is faster, the surface area is more maintainable, and there's now a debug toggle to diagnose issues without console gymnastics.

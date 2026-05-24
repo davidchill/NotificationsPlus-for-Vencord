@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.2.0`
+`0.2.1`
 
 ## What it does
 
@@ -16,9 +16,9 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Performance note
 
-> **Set per-server notifications to "Only @mentions" on servers you don't need to track closely.**
+> **For best results, set per-server notifications to "Only @mentions" on servers you don't need to track closely.**
 >
-> Discord fires a notification for every qualifying message. If a busy server is set to "All Messages", every message in every channel will trigger a toast, which creates a continuous stream of `BrowserWindow` creations and destructions. This can noticeably impact performance over time. Keeping high-traffic servers on "Only @mentions" ensures only genuinely relevant messages reach the plugin. You can configure this per-server in Discord's notification settings (right-click the server icon → Notification Settings).
+> Discord fires a notification for every qualifying message. Since v0.2.1 the plugin includes a burst-skip guard that drops new arrivals when the stack is at cap and the oldest visible toast is still fresh (within 500ms) — DM bursts feed the "N earlier messages" group counter so no information is lost, and server bursts are dropped silently. This eliminates the BrowserWindow churn that high-traffic "All Messages" servers used to cause. The "Only @mentions" recommendation is still the cleanest setup if you don't need every message, but a busy server set to "All Messages" no longer creates a continuous stream of compositor work.
 
 ## Settings
 
@@ -117,7 +117,9 @@ Each pool window pre-loads a single static template page (`TEMPLATE_HTML`) at cr
 
 **Font handling:** Google Fonts CSS and `.woff2` files are fetched in parallel at plugin start (using `Promise.all`) via Electron's `net.request` module — respects system proxy settings, has a 10-second per-request timeout that aborts hung connections, and rejects on non-2xx/3xx status codes. Files are base64-encoded and cached in memory as data URIs; every toast gets the font inlined — zero network requests per notification. System font choices (Segoe UI, Arial) skip the fetch entirely. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
 
-**Toast stacking:** Up to N toasts can be visible simultaneously per display+corner combination (N = "Max stacked toasts", 1–5, default 3 for server messages). Toasts are ordered newest-closest-to-corner, oldest furthest away. `repositionStack()` recomputes all positions as absolute values from the corner edge on every insert and after every height measurement, eliminating the race-condition drift that relative delta-shifting would produce with concurrent notifications.
+**Toast stacking:** Up to N toasts can be visible simultaneously per display+corner combination (N = "Max stacked toasts", 1–5, default 3 for server messages). Toasts are ordered newest-closest-to-corner, oldest furthest away. `repositionStack()` recomputes all positions as absolute values from the corner edge on every insert and after every height measurement, eliminating the race-condition drift that relative delta-shifting would produce with concurrent notifications. A new toast's slot at the corner is set synchronously before show (so it appears at the right position with no jump); the shifts of existing toasts are routed through a per-stack scheduled reposition so concurrent arrivals in the same tick coalesce into one full-stack pass.
+
+**Burst-skip:** When the stack is at cap and the oldest visible toast is still younger than 500 ms, a new arrival is skipped — for DMs it feeds the "N earlier messages" group counter, for servers it's a silent drop. This prevents the create→show→evict→close churn that would otherwise fire for every burst arrival past the cap when a high-traffic server set to "All Messages" lights up. Avatar disk reads are deferred until after this check, so dropped bursts pay no I/O, and the surviving toast's avatar resolve is parallelized with the BrowserWindow pool acquire.
 
 **DM-specific behavior:** Direct message toasts route to a separate display+corner stack configured in "Direct Message Placement" settings. When "Stay open until dismissed" is on, DM toasts have no timer and never auto-close. When the number of undismissed DM toasts exceeds the "Group after N messages" threshold, the oldest is evicted and a compact 52px group summary window ("N earlier messages") appears at the bottom of the DM stack. The count updates live without reloading the window. Dismissing the group window resets the overflow counter.
 
