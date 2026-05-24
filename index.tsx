@@ -32,47 +32,80 @@ function applyPosition() {
 
 // ── Native toast helpers ─────────────────────────────────────────────────────
 
-function updateToast() {
+// Debounce the main-process config push so rapid keystrokes in number/text inputs
+// (e.g. typing "16" or a hex color) coalesce into a single IPC call instead of
+// firing one per character.
+function debounce<A extends any[]>(fn: (...args: A) => void, ms: number) {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    return (...args: A) => {
+        if (t !== null) clearTimeout(t);
+        t = setTimeout(() => { t = null; fn(...args); }, ms);
+    };
+}
+
+const pushToastConfig = debounce(() => {
     if (settings.store.useCustomNativeToast) Native.updateMainProcessPatch(getToastConfig());
+}, 150);
+
+function updateToast() {
+    pushToastConfig();
 }
 
 let OriginalNotification: typeof window.Notification | null = null;
 
-function getToastConfig(): ToastConfig {
-    const {
-        toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
-        toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
-        toastDmPersist, toastDmGroupThreshold,
-        toastDuration, toastTitleTemplate, toastBodyTemplate, redirectOnClick, toastIconUrl,
-        toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg, toastBgOpacity,
-        toastDmAccent, toastServerAccent,
-    } = settings.store;
+// Shared placement + appearance snapshot — every consumer of toast settings reads
+// this so adding a new setting only requires:
+//   1. defining the key in definePluginSettings below
+//   2. adding it here
+//   3. adding a UI cell in SettingsPanel
+// Previously this list lived in three places (getToastConfig, PatchedNotification,
+// handleTest) and silently drifted when new fields were added.
+function getToastShared() {
+    const s = settings.store;
     return {
-        displayIndex: toastDisplayIndex,
-        corner: toastCorner as ToastOptions["corner"],
-        offsetX: toastOffsetX,
-        offsetY: toastOffsetY,
-        dmDisplayIndex: toastDmDisplayIndex,
-        dmCorner: toastDmCorner as ToastOptions["dmCorner"],
-        dmOffsetX: toastDmOffsetX,
-        dmOffsetY: toastDmOffsetY,
-        dmPersist: toastDmPersist,
-        dmGroupThreshold: toastDmGroupThreshold,
-        duration: toastDuration,
-        titleTemplate: toastTitleTemplate,
-        bodyTemplate: toastBodyTemplate,
-        redirectOnClick,
-        iconUrl: toastIconUrl,
-        font: toastFont,
-        titleSize: toastTitleSize,
-        channelSize: toastChannelSize,
-        bodySize: toastBodySize,
-        stackSize: toastStackSize,
-        entrance: toastEntrance,
-        gradientBg: toastGradientBg,
-        bgOpacity: toastBgOpacity,
-        dmAccent: toastDmAccent,
-        serverAccent: toastServerAccent,
+        displayIndex: s.toastDisplayIndex,
+        corner: s.toastCorner as ToastOptions["corner"],
+        offsetX: s.toastOffsetX,
+        offsetY: s.toastOffsetY,
+        dmDisplayIndex: s.toastDmDisplayIndex,
+        dmCorner: s.toastDmCorner as ToastOptions["dmCorner"],
+        dmOffsetX: s.toastDmOffsetX,
+        dmOffsetY: s.toastDmOffsetY,
+        dmPersist: s.toastDmPersist,
+        dmGroupThreshold: s.toastDmGroupThreshold,
+        duration: s.toastDuration,
+        font: s.toastFont,
+        titleSize: s.toastTitleSize,
+        channelSize: s.toastChannelSize,
+        bodySize: s.toastBodySize,
+        stackSize: s.toastStackSize,
+        entrance: s.toastEntrance as ToastOptions["entrance"],
+        gradientBg: s.toastGradientBg,
+        bgOpacity: s.toastBgOpacity,
+        dmAccent: s.toastDmAccent,
+        serverAccent: s.toastServerAccent,
+        alwaysOnTop: s.toastAlwaysOnTop,
+    };
+}
+
+function getToastConfig(): ToastConfig {
+    const s = settings.store;
+    return {
+        ...getToastShared(),
+        titleTemplate: s.toastTitleTemplate,
+        bodyTemplate: s.toastBodyTemplate,
+        redirectOnClick: s.redirectOnClick,
+        iconUrl: s.toastIconUrl,
+    };
+}
+
+function buildToastOptions(callTitle: string, callBody: string, callIcon: string): ToastOptions {
+    const s = settings.store;
+    return {
+        ...getToastShared(),
+        title: s.toastTitleTemplate.replace("{title}", callTitle),
+        body: s.toastBodyTemplate.replace("{body}", callBody),
+        icon: s.toastIconUrl || callIcon,
     };
 }
 
@@ -81,42 +114,7 @@ function applyToastPatch() {
     OriginalNotification = window.Notification;
 
     function PatchedNotification(title: string, options?: NotificationOptions) {
-        const {
-            toastDisplayIndex, toastCorner, toastOffsetX, toastOffsetY,
-            toastDmDisplayIndex, toastDmCorner, toastDmOffsetX, toastDmOffsetY,
-            toastDmPersist, toastDmGroupThreshold,
-            toastDuration, toastTitleTemplate, toastBodyTemplate, toastIconUrl,
-            toastFont, toastTitleSize, toastChannelSize, toastBodySize, toastStackSize, toastEntrance, toastGradientBg, toastBgOpacity,
-            toastDmAccent, toastServerAccent,
-        } = settings.store;
-
-        Native.showToast({
-            title: toastTitleTemplate.replace("{title}", title),
-            body: toastBodyTemplate.replace("{body}", options?.body ?? ""),
-            icon: toastIconUrl || (options as any)?.icon || "",
-            displayIndex: toastDisplayIndex,
-            corner: toastCorner as ToastOptions["corner"],
-            offsetX: toastOffsetX,
-            offsetY: toastOffsetY,
-            dmDisplayIndex: toastDmDisplayIndex,
-            dmCorner: toastDmCorner as ToastOptions["dmCorner"],
-            dmOffsetX: toastDmOffsetX,
-            dmOffsetY: toastDmOffsetY,
-            dmPersist: toastDmPersist,
-            dmGroupThreshold: toastDmGroupThreshold,
-            duration: toastDuration,
-            font: toastFont,
-            titleSize: toastTitleSize,
-            channelSize: toastChannelSize,
-            bodySize: toastBodySize,
-            stackSize: toastStackSize,
-            entrance: toastEntrance,
-            gradientBg: toastGradientBg,
-            bgOpacity: toastBgOpacity,
-            dmAccent: toastDmAccent,
-            serverAccent: toastServerAccent,
-        });
-
+        Native.showToast(buildToastOptions(title, options?.body ?? "", (options as any)?.icon ?? ""));
         return { onclick: null, onclose: null, close() { } };
     }
 
@@ -173,6 +171,29 @@ function Cell({ label, children, full }: { label: string; children: React.ReactN
     );
 }
 
+// Normalize any stored accent value to a valid `#rrggbb` string for <input type="color">.
+// Accepts 3-char (#abc) and 6-char (#aabbcc) hex; anything else falls back to Discord
+// brand purple so the input still renders something usable rather than going blank.
+function normalizeHex(raw: string, fallback = "#5865f2"): string {
+    let s = (raw || "").trim().replace(/^#/, "");
+    if (s.length === 3) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+    return /^[0-9a-fA-F]{6}$/.test(s) ? `#${s.toLowerCase()}` : fallback;
+}
+
+function ColorPicker({ value, onChange, fallback }: { value: string; onChange: (v: string) => void; fallback?: string; }) {
+    const normalized = normalizeHex(value, fallback);
+    return (
+        <div className="np-color">
+            <input
+                type="color"
+                value={normalized}
+                onChange={e => onChange(e.target.value)}
+            />
+            <span className="np-color-text">{normalized}</span>
+        </div>
+    );
+}
+
 function NumInput({ value, min, onChange }: { value: number; min?: number; onChange: (v: number) => void; }) {
     const [raw, setRaw] = React.useState(String(value));
     React.useEffect(() => { setRaw(String(value)); }, [value]);
@@ -222,34 +243,10 @@ function SettingsPanel() {
 
     function handleTest() {
         if (s.useCustomNativeToast) {
-            const base = {
-                icon: "",
-                displayIndex: s.toastDisplayIndex,
-                corner: s.toastCorner as ToastOptions["corner"],
-                offsetX: s.toastOffsetX,
-                offsetY: s.toastOffsetY,
-                dmDisplayIndex: s.toastDmDisplayIndex,
-                dmCorner: s.toastDmCorner as ToastOptions["dmCorner"],
-                dmOffsetX: s.toastDmOffsetX,
-                dmOffsetY: s.toastDmOffsetY,
-                dmPersist: s.toastDmPersist,
-                dmGroupThreshold: s.toastDmGroupThreshold,
-                duration: s.toastDuration,
-                font: s.toastFont,
-                titleSize: s.toastTitleSize,
-                channelSize: s.toastChannelSize,
-                bodySize: s.toastBodySize,
-                stackSize: s.toastStackSize,
-                entrance: s.toastEntrance,
-                gradientBg: s.toastGradientBg,
-                bgOpacity: s.toastBgOpacity,
-                dmAccent: s.toastDmAccent,
-                serverAccent: s.toastServerAccent,
-            };
             // Fire a DM toast (no channel context in title → isDMTitle = true)
-            Native.showToast({ ...base, title: "NotificationsPlus", body: "DM test — looking good?" });
+            Native.showToast(buildToastOptions("NotificationsPlus", "DM test — looking good?", ""));
             // Fire a regular server toast (channel context → isDMTitle = false)
-            Native.showToast({ ...base, title: "NotificationsPlus (#general, Testing)", body: "Server notification test — looking good?" });
+            Native.showToast(buildToastOptions("NotificationsPlus (#general, Testing)", "Server notification test — looking good?", ""));
         } else {
             showNotification({
                 title: "NotificationsPlus",
@@ -371,6 +368,12 @@ function SettingsPanel() {
                             onChange={v => set("redirectOnClick", v, updateToast)}
                         />
                     </Cell>
+                    <Cell label="Show above all other windows">
+                        <Switch
+                            checked={s.toastAlwaysOnTop}
+                            onChange={v => set("toastAlwaysOnTop", v, updateToast)}
+                        />
+                    </Cell>
                 </Grid>
 
                 <SubHeader>Appearance</SubHeader>
@@ -398,17 +401,17 @@ function SettingsPanel() {
                         </Cell>
                     )}
                     <Cell label="DM accent color">
-                        <TextInput
+                        <ColorPicker
                             value={s.toastDmAccent}
+                            fallback="#23a55a"
                             onChange={v => set("toastDmAccent", v, updateToast)}
-                            placeholder="#23a55a"
                         />
                     </Cell>
                     <Cell label="Server accent color">
-                        <TextInput
+                        <ColorPicker
                             value={s.toastServerAccent}
+                            fallback="#5865f2"
                             onChange={v => set("toastServerAccent", v, updateToast)}
-                            placeholder="#5865f2"
                         />
                     </Cell>
                     <Cell label="Font family">
@@ -463,6 +466,22 @@ function SettingsPanel() {
                         ))}
                     </div>
                 )}
+            </div>
+
+            <Forms.FormDivider />
+
+            <div>
+                <Forms.FormTitle tag="h4">Diagnostics</Forms.FormTitle>
+                <div className="np-toggle-row">
+                    <Switch
+                        checked={s.npDebug}
+                        onChange={v => set("npDebug", v, () => Native.setDebug(v))}
+                    />
+                    <Forms.FormText>
+                        Log internal errors to Discord's devtools console (Ctrl+Shift+I → Console tab).
+                        Useful when reporting bugs or diagnosing why a font / icon / notification isn't behaving.
+                    </Forms.FormText>
+                </div>
             </div>
 
             <Button onClick={handleTest} style={{ alignSelf: "flex-start" }}>Send test notification</Button>
@@ -598,6 +617,12 @@ const settings = definePluginSettings({
         type: OptionType.NUMBER,
         default: 3,
     },
+    toastAlwaysOnTop: {
+        hidden: true,
+        description: "Show toast above all other windows (disable to keep it within the Discord layer)",
+        type: OptionType.BOOLEAN,
+        default: true,
+    },
     toastGradientBg: {
         hidden: true,
         description: "Subtle gradient background on toast",
@@ -682,6 +707,12 @@ const settings = definePluginSettings({
         type: OptionType.NUMBER,
         default: 13,
     },
+    npDebug: {
+        hidden: true,
+        description: "Log internal errors to Discord's devtools console (Ctrl+Shift+I)",
+        type: OptionType.BOOLEAN,
+        default: false,
+    },
     _ui: {
         type: OptionType.COMPONENT,
         description: "",
@@ -712,6 +743,9 @@ export default definePlugin({
 
     start() {
         applyPosition();
+        // Push debug flag to main before any IPC so the first toast (if useCustomNativeToast
+        // is enabled) already has the right logging behavior.
+        Native.setDebug(settings.store.npDebug);
         if (settings.store.useCustomNativeToast) applyToastPatch();
     },
 

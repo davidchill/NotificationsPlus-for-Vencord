@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.2.0 — 2026-05-24
+
+This release is a focused tech-stack pass: every recommendation from a full architecture review (plus three follow-up polish items) landed in one batch. No user-facing behavior changes by default — but the hot path is faster, the surface area is more maintainable, and there's now a debug toggle to diagnose issues without console gymnastics.
+
+### Added
+
+- **Color picker for accent colors** — DM and server accent settings now use `<input type="color">` instead of free-text hex fields. Invalid input is no longer possible at the UI layer; the picker enforces `#rrggbb` and shows a lowercase monospace label of the resolved value next to the swatch.
+- **Diagnostics toggle (`npDebug`)** — a new opt-in setting under a "Diagnostics" panel section. When enabled, internal errors are logged to **Discord's renderer devtools console** (`Ctrl+Shift+I` → Console tab) with a `[NotificationsPlus:<scope>]` tag and full stack trace. Scopes include `font-cache:<name>`, `group-label-update`, `open-link`, `close-animate:send`, `close-animate:exec`, and `jump-to-message`. Errors are also written to the main-process console (visible if Discord was launched from a terminal). Default off — zero cost for normal users.
+- **Preload-script update channel** — toast windows now use a generated preload script (written once per Discord launch to `app.getPath('temp')/notificationsPlus-toast-preload.js`) that listens for `np:update` and `np:close-animate` IPC events. This replaces `executeJavaScript` on the per-notification hot path with `webContents.send()` — Electron's structured-clone serialization avoids the JSON-stringify + V8 parse + eval round-trip. Falls back silently to the legacy `executeJavaScript` path if the preload file write ever fails. Sandbox stays on; contextIsolation stays on.
+
+### Changed
+
+- **Settings IPC debounced (150 ms trailing)** — typing in number/text fields (offsets, hex colors before the picker swap) no longer fires one `updateMainProcessPatch` IPC per keystroke. Multi-char edits coalesce into a single config push after typing stops.
+- **`iconCache` is now true LRU** — on cache hit the entry is removed and re-inserted so it moves to the tail of `Map`'s insertion order. Eviction now removes the truly least-recently-used entry instead of the oldest insertion, fixing a frequently-re-seen avatar getting evicted while one-shots persist.
+- **Animation loop uses one shared ticker** — `animateWindowTo` previously created a fresh `setInterval` per move. Replaced with a global `pendingMoves: Map<BrowserWindow, MoveSpec>` driven by a single `setInterval` that auto-stops when the queue empties and restarts on the next move. Multiple toasts moving at once now collapse N timers into one.
+- **Pool size auto-scales** — the constant `POOL_SIZE = 4` is replaced by `POOL_MIN = 4` and `POOL_MAX = 12` bounds. `targetPoolSize()` returns `clamp(POOL_MIN, POOL_MAX, stackSize + dmGroupThreshold + 1)` from current config, so users with high stack/group caps automatically get more pre-warmed windows ready.
+- **`warmPool()` deferred to `setImmediate`** — `startMainProcessPatch` and `updateMainProcessPatch` no longer block their IPC return on pool creation. First toast after plugin start still has a warm window in practice; cold case falls back to on-demand creation in `acquireWindow`.
+- **Stack/group caps clamped once at boundary** — new `clampToastCaps()` mutates `stackSize` (1–5) and `dmGroupThreshold` (min 2) at the IPC entry points. `showToastInternal` reads them directly without per-toast `Math.max(...)` work.
+- **`hexToRgb` hardened against bad input** — accepts both 3-char and 6-char hex; on malformed input returns Discord brand purple `[88, 101, 242]` instead of silently degrading to black via the `NaN >> n → 0` JavaScript quirk.
+- **`fetchBuffer` rewritten on Electron's `net` module** — replaces homegrown `https.get` with `electron.net.request`. Now respects system proxy settings, has a 10-second per-request timeout that aborts hung connections (previously could stall `ensureFontCached` indefinitely), and rejects on non-2xx/3xx status codes. Redirect handling moves to Electron's built-in policy.
+
+### Refactored
+
+- **Settings consumption de-duplicated** — `getToastShared()` is the single source of truth for the 22 placement/appearance settings. `getToastConfig()`, `buildToastOptions()`, `PatchedNotification`, and `handleTest` all consume it. Adding a new setting now touches one helper plus the UI cell, instead of three duplicate destructuring blocks.
+- **Template HTML extracted to `toastTemplate.ts`** — the ~95-line `TEMPLATE_HTML` string, the new `PRELOAD_SRC` script, the Discord SVG fallback, and the layout dimension constants (`TOAST_W`, `TOAST_MIN_H`, `TOAST_MAX_H`, `TOAST_GAP`, `GROUP_H`) all live in a dedicated file. `native.ts` is now logic-only.
+
+### Internal
+
+- New module `toastTemplate.ts` (212 lines) exports presentation constants used by `native.ts`.
+- New `sendToastUpdate(win, data)` consolidates the "push update + measure height" round-trip. Uses preload IPC when available with a one-shot reply channel (`np:measured-<winId>-<seq>`) and a 2-second safety timeout; otherwise falls back to the legacy `executeJavaScript(__npUpdate(...))` path.
+- New `ensurePreload()` writes the preload script once per session to `app.getPath('temp')`. Returns `null` on write failure, which is the signal callers use to choose the executeJavaScript fallback.
+- New `logErr(scope, err)` writes to `console.warn` AND forwards to the renderer via `senderWebContents.executeJavaScript`. Both paths gated on `debugEnabled`. The forwarding `.catch` is intentionally empty (NOT `logErr`) to prevent recursive failure loops.
+- New `setDebug(enabled)` exported IPC handler stores the debug flag. `index.tsx`'s `start()` calls this so the flag persists across Discord restarts.
+- New `clampToastCaps(o)` helper mutates `stackSize` and `dmGroupThreshold` in place.
+- New `normalizeHex(raw, fallback)` and `ColorPicker` component in `index.tsx`.
+- New `debounce<A>(fn, ms)` utility in `index.tsx`.
+- New `targetPoolSize()` and `POOL_MIN` / `POOL_MAX` constants replace the `POOL_SIZE` constant.
+- `pendingMoves: Map<BrowserWindow, MoveSpec>` and `animTicker` replace the old `activeAnimations: WeakMap<BrowserWindow, Interval>` per-window timer pattern.
+- `replySeq` monotonic counter ensures reply-channel uniqueness across rapid toast bursts.
+- `stopMainProcessPatch` now clears `pendingMoves` and the global animation ticker in addition to existing cleanup.
+
+### CSS
+
+- New `.np-color` flex row with embedded `<input type="color">` styling — Webkit color-swatch chrome stripped so the swatch fills the input; resolved hex value shown in monospace.
+
 ## v0.1.16 — 2026-05-03
 
 ### Performance
