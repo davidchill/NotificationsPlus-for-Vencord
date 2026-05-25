@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.3.0 — 2026-05-24
+
+A multi-feature release driven by real-world burst diagnostics. Adds per-channel coalescing, restores jump-to-message after Discord silently stopped emitting `launch=` in `toastXml`, exposes the BrowserWindow pool floor as a user setting, and ships an opt-in performance diagnostics suite that made every change in this release measurable end-to-end.
+
+### Added
+
+- **Per-channel coalescing** — new `Coalesce window (ms, 0 = off)` setting in the Behavior section, default 200 ms. Successive messages in the same channel within this window merge into a single toast titled with the latest sender's name plus a `"(N new)"` suffix (e.g. `"Alice (3 new) (#general, Chat)"`). The buffer's timer is NOT reset on subsequent arrivals — per-toast latency is bounded at exactly `coalesceWindowMs` regardless of burst length, so the user always sees the toast within the configured window. Notifications without a coalesce key (system toasts, malformed titles) fall through to immediate emit. The (#channel, Category) substring sits cleanly between the username and the title parser's context group, so the existing title-display logic handles it without modification.
+- **Title-based fallback coalesce key** — when `extractNavData` returns null (current Discord behavior on at least one build that no longer emits `launch=` in `toastXml`), a new `deriveFallbackCoalesceKey` parses the title's "(#channel, Category)" suffix to produce a server key like `srv:#general, Chat` so multiple senders in the same channel still coalesce. DMs get keyed as `dm:Alice`. This is the actively-used path on builds where Discord's new `toastXml` shape lacks IDs entirely.
+- **Jump-to-message restoration via FluxDispatcher** — Discord's `toastXml` no longer carries `launch=` on at least one build, which silently broke the redirect-on-click "scroll to message" behavior. Restored by subscribing to `MESSAGE_CREATE` in the renderer, maintaining a LRU `Map<"#channel-name, Category", {channelId, messageId}>` (capped at 200 entries with true LRU eviction), and exposing `window.__npJumpFromTitle(rawTitle)` for the native click handler to invoke via `executeJavaScript`. Server text channels (type 0) only — DMs continue to fall back to `notif.emit("click")` which opens the channel without scrolling. The native click handler still prefers `navData` when present (in case Discord ever starts emitting `launch=` again) and only uses the title-derived path as fallback.
+- **Performance diagnostics suite** — new `logDiag(scope, msg)` companion to `logErr`, same dual-output (main-process console + Discord renderer devtools console), same `npDebug` gate. Emits five scopes that together let you measure every change in this release end-to-end:
+  - `toast.show` — per-toast pipeline timing broken into `acquire` (pool/icon), `update` (IPC + measure), `tail` (position + show), `total`, plus `measuredH`.
+  - `burst-skip` — when the v0.2.1 burst-skip guard fires, with `oldestAgeMs` and `stackFull` ratio.
+  - `evict` — when stack-cap eviction closes an old toast, with `ageMs`.
+  - `coalesce-flush` — when the coalesce timer fires, with `channel`, `count`, and `latencyMs` (real wall-clock latency, not just the timer value — exposes event-loop slippage).
+  - `pool` — when `acquireWindow` falls through to cold-create (pool MISS), with the current `target`.
+  - `nav-extract` — per-notification key-decision log so you can verify the coalesce buffer is actually engaging on the title-derived fallback.
+- **`Pool minimum size` setting (1–8, default 4)** — new full-width Cell in the Behavior section. Lets users tune the BrowserWindow pool floor for RAM/latency tradeoff. Each warm pool window costs ~15–40 MB at idle but saves a ~50–150 ms cold-create on the first toast after a quiet period. Default settings make this a no-op (the auto-scale formula dominates); takes effect for users with tight `stackSize` + `dmGroupThreshold` caps where the formula falls below the floor.
+
+### Changed
+
+- **Pool ceiling raised from 12 to 16** and the formula buffer raised from `+1` to `+POOL_BUFFER (+2)` — accommodates the max-cap user case (`stackSize=5` + a moderate `dmGroupThreshold=10` + buffer wants 17) and gives a small surplus to absorb arrivals overlapping with not-yet-closed eviction targets. Negligible idle RAM impact (~15–40 MB max) for users at default caps.
+- **`acquireWindow` refills the pool synchronously** instead of via `process.nextTick(warmPool)`. Under burst, multiple `acquireWindow` calls run interleaved at their await points; with deferred refill, several could see a draining pool before any tick fired. Sync refill guarantees the pool array is back to target before each acquire's await yields. `warmPool` remains idempotent so the only added cost is `new BrowserWindow()` for as many slots as were consumed since the last warmPool — typically 1. Does NOT fix the case where pool windows have stalled `loadURL` under heavy renderer contention (that's an architectural limit), but does prevent the "5 concurrent acquires all double-create" scenario.
+- **`emitToast` extracted from `processNotification`** so both the direct-emit and coalesce-flush paths share one call site for icon-deferred, navData-aware toast emission. Cleaner separation and prevents drift if the emit logic ever changes.
+- **`extractNavData` work skipped when neither `redirectOnClick` nor coalescing is on** — `processNotification` now gates the regex on `needsNavData = cfg.redirectOnClick || cfg.coalesceWindowMs > 0`. Tiny per-notification savings, defensive against future opt-in features.
+
+### Internal
+
+- New module-level constants in `native.ts`: `POOL_MIN_DEFAULT (4)`, `POOL_MIN_MAX (8)`, `POOL_BUFFER (2)`. `POOL_MIN` removed in favor of the configurable `mainToastConfig.poolMin`.
+- `ToastOptions` (and via inheritance `ToastConfig`) gains `coalesceWindowMs` (clamped `[0, 2000]`) and `poolMin` (clamped `[1, 8]`). Both clamped at the IPC boundary in `clampToastCaps` so `showToastInternal` and `targetPoolSize` can read them directly.
+- New `CoalesceBuffer` interface and `coalesceBuffers: Map<channelKey, CoalesceBuffer>` in `native.ts`. Buffer tracks `firstAddedAt` for honest latency diagnostics.
+- New `flushCoalesceBuffer(key)` and `flushAllCoalesceBuffers()` — the latter is invoked by `updateMainProcessPatch` when the user disables coalescing so pending notifications don't sit indefinitely.
+- New `deriveFallbackCoalesceKey(title)` in `native.ts` — uses the same balanced-paren walk as the title parser in `buildUpdateData` to produce `srv:#name, Category` for server messages and `dm:Username` for DMs.
+- New `recentMessageByChannelKey: Map<string, {channelId, messageId}>` in `index.tsx` with LRU eviction at 200 entries.
+- New `channelContextKey(channelName, categoryName)` and `onMessageCreate(payload)` in `index.tsx`. Subscription installed unconditionally in `start()` so the lookup map is warm before the user toggles custom toasts on.
+- New `installJumpHelper()` / `uninstallJumpHelper()` that manage the `window.__npJumpFromTitle` global. `stop()` clears the map and removes the global cleanly.
+- `acquireWindow` calls `warmPool()` synchronously after every successful pop (was `process.nextTick`) and once in the MISS path.
+- `ChannelStore` imported via `findStoreLazy("ChannelStore")` from `@webpack`. `FluxDispatcher` from `@webpack/common`.
+
+### Bundle checklist (this release)
+- `native.ts` — coalescing buffer + fallback key, diagnostics suite, pool refill changes, pool floor configurable, `emitToast` extracted
+- `index.tsx` — `coalesceWindowMs` and `toastPoolMin` settings + UI cells, `FluxDispatcher` subscription, `__npJumpFromTitle` helper, start/stop wiring
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump, new setting rows, updated "How it works" sections
+
 ## v0.2.1 — 2026-05-24
 
 Focused burst-performance pass targeting the "notifications=All on a busy server" scenario where a tight stream of arrivals previously caused window-pool churn, redundant disk I/O, and overlapping reposition animations. Three changes work together to make the hot path do nothing for arrivals that the user can't perceive anyway.

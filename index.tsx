@@ -9,11 +9,14 @@ import "./style.css";
 import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
 import { Switch } from "@components/Switch";
+import { findStoreLazy } from "@webpack";
 import { PluginNative } from "@utils/types";
 import definePlugin, { OptionType } from "@utils/types";
-import { Button, Forms, React, Select, TextInput } from "@webpack/common";
+import { Button, FluxDispatcher, Forms, React, Select, TextInput } from "@webpack/common";
 
 import type { DisplayInfo, ToastConfig, ToastOptions } from "./native";
+
+const ChannelStore = findStoreLazy("ChannelStore") as any;
 
 const Native = VencordNative.pluginHelpers.NotificationsPlus as PluginNative<typeof import("./native")>;
 
@@ -85,6 +88,8 @@ function getToastShared() {
         dmAccent: s.toastDmAccent,
         serverAccent: s.toastServerAccent,
         alwaysOnTop: s.toastAlwaysOnTop,
+        coalesceWindowMs: s.toastCoalesceWindowMs,
+        poolMin: s.toastPoolMin,
     };
 }
 
@@ -138,6 +143,78 @@ function removeToastPatch() {
     OriginalNotification = null;
     document.body.classList.remove("np-toast-active");
     Native.stopMainProcessPatch();
+}
+
+// ── Jump-to-message fallback ──────────────────────────────────────────────────
+//
+// On at least one Discord build the toastXml that the main process receives has no
+// `launch=` attribute, so native.ts's extractNavData can never recover the channel/
+// message IDs. Without IDs the click handler can only emit("click") (opens the
+// channel) — the "jump to the specific message" feature silently degrades.
+//
+// We restore it from the renderer side, where the IDs are first-class:
+//   1. Subscribe to MESSAGE_CREATE via FluxDispatcher and maintain a small LRU map
+//      keyed by the same "#channel-name, Category" string that appears in the
+//      notification title — so the lookup is a direct Map.get with no search.
+//   2. Expose `window.__npJumpFromTitle(rawTitle)` for native to invoke via
+//      executeJavaScript on click when navData is null.
+//
+// Cost: one Map.set per Discord message anywhere in the user's account. Bounded at
+// MAX_RECENT_KEYS entries with LRU eviction so chatty users don't accumulate.
+const MAX_RECENT_KEYS = 200;
+const recentMessageByChannelKey = new Map<string, { channelId: string; messageId: string; }>();
+
+// Mirrors the title format Discord puts in toastXml: "#name, Category" when the channel
+// has a parent category, "#name" otherwise. Must match the substring extracted by
+// __npJumpFromTitle below — they form one Map key contract.
+function channelContextKey(channelName: string, categoryName: string): string {
+    return categoryName ? `#${channelName}, ${categoryName}` : `#${channelName}`;
+}
+
+function onMessageCreate(payload: { message?: { channel_id?: string; id?: string; }; }) {
+    const msg = payload?.message;
+    if (!msg?.channel_id || !msg.id) return;
+    const channel = ChannelStore?.getChannel?.(msg.channel_id);
+    // Only track server text channels (type 0). DMs/threads/voice/etc. either don't
+    // appear in this code path's notifications or aren't reachable via the title parse.
+    if (!channel || channel.type !== 0) return;
+    const parent = channel.parent_id ? ChannelStore.getChannel(channel.parent_id) : null;
+    const key = channelContextKey(channel.name ?? "", parent?.name ?? "");
+    // True LRU: delete + re-set so the newest is at the tail of insertion order.
+    if (recentMessageByChannelKey.has(key)) recentMessageByChannelKey.delete(key);
+    recentMessageByChannelKey.set(key, { channelId: msg.channel_id, messageId: msg.id });
+    if (recentMessageByChannelKey.size > MAX_RECENT_KEYS) {
+        const oldest = recentMessageByChannelKey.keys().next().value;
+        if (oldest !== undefined) recentMessageByChannelKey.delete(oldest);
+    }
+}
+
+function installJumpHelper() {
+    (window as any).__npJumpFromTitle = function (rawTitle: string) {
+        try {
+            // Same balanced-paren walk as native's title parser — pull the
+            // "#channel-name, Category" substring out of "Username (#channel, Category)".
+            const ctxIdx = rawTitle.search(/\s+\(#/);
+            if (ctxIdx === -1) return; // DM or unparseable — emit("click") already handled it.
+            const openIdx = rawTitle.indexOf("(", ctxIdx);
+            let depth = 0;
+            let closeIdx = -1;
+            for (let i = openIdx; i < rawTitle.length; i++) {
+                if (rawTitle[i] === "(") depth++;
+                else if (rawTitle[i] === ")") { if (--depth === 0) { closeIdx = i; break; } }
+            }
+            if (closeIdx === -1) return;
+            const key = rawTitle.slice(openIdx + 1, closeIdx); // "#channel-name, Category"
+            const nav = recentMessageByChannelKey.get(key);
+            if (!nav) return;
+            const jumpModule = (window as any).Vencord?.Webpack?.findByProps?.("jumpToMessage");
+            jumpModule?.jumpToMessage?.({ channelId: nav.channelId, messageId: nav.messageId, flash: true });
+        } catch { /* swallow — never let a click handler throw */ }
+    };
+}
+
+function uninstallJumpHelper() {
+    delete (window as any).__npJumpFromTitle;
 }
 
 // ── Settings UI ──────────────────────────────────────────────────────────────
@@ -373,6 +450,30 @@ function SettingsPanel() {
                             checked={s.toastAlwaysOnTop}
                             onChange={v => set("toastAlwaysOnTop", v, updateToast)}
                         />
+                    </Cell>
+                    <Cell label="Coalesce window (ms, 0 = off)" full>
+                        <NumInput
+                            value={s.toastCoalesceWindowMs}
+                            min={0}
+                            onChange={v => set("toastCoalesceWindowMs", Math.max(0, Math.min(2000, v)), updateToast)}
+                        />
+                        <Forms.FormText style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
+                            Successive messages in the same channel within this window merge into one toast ("Alice (3 new)").
+                            Every toast pays this much latency before showing. Set to 0 to show each message immediately.
+                        </Forms.FormText>
+                    </Cell>
+                    <Cell label="Pool minimum size (1–8)" full>
+                        <NumInput
+                            value={s.toastPoolMin}
+                            min={1}
+                            onChange={v => set("toastPoolMin", Math.max(1, Math.min(8, v)), updateToast)}
+                        />
+                        <Forms.FormText style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
+                            Floor for the warm BrowserWindow pool. Each warm window costs ~15–40 MB of RAM at idle but
+                            saves a ~50–150 ms cold-create on the first toast after a quiet period. Default 4. Lower to
+                            2 if you want to reclaim idle RAM and don't mind a brief stall on the first toast after
+                            launch; raise to 6–8 if you frequently get bursts of many simultaneous notifications.
+                        </Forms.FormText>
                     </Cell>
                 </Grid>
 
@@ -623,6 +724,18 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         default: true,
     },
+    toastCoalesceWindowMs: {
+        hidden: true,
+        description: "Per-channel debounce window (ms) for merging burst messages; 0 disables",
+        type: OptionType.NUMBER,
+        default: 200,
+    },
+    toastPoolMin: {
+        hidden: true,
+        description: "Minimum warm BrowserWindow pool size (1–8); higher = more RAM at idle, faster first toast",
+        type: OptionType.NUMBER,
+        default: 4,
+    },
     toastGradientBg: {
         hidden: true,
         description: "Subtle gradient background on toast",
@@ -746,12 +859,21 @@ export default definePlugin({
         // Push debug flag to main before any IPC so the first toast (if useCustomNativeToast
         // is enabled) already has the right logging behavior.
         Native.setDebug(settings.store.npDebug);
+        // Subscribe to MESSAGE_CREATE unconditionally so the jump-to-message fallback
+        // works regardless of whether custom toasts are currently enabled — the user
+        // may flip the toggle without restarting Discord, and we want the map already
+        // populated by the time the first toast fires.
+        FluxDispatcher.subscribe("MESSAGE_CREATE", onMessageCreate);
+        installJumpHelper();
         if (settings.store.useCustomNativeToast) applyToastPatch();
     },
 
     stop() {
         const root = document.documentElement;
         ["--np-top", "--np-bottom", "--np-left", "--np-right"].forEach(v => root.style.removeProperty(v));
+        FluxDispatcher.unsubscribe("MESSAGE_CREATE", onMessageCreate);
+        uninstallJumpHelper();
+        recentMessageByChannelKey.clear();
         removeToastPatch();
     },
 });

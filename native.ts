@@ -57,6 +57,18 @@ export interface ToastOptions {
     dmAccent: string;
     serverAccent: string;
     alwaysOnTop: boolean;
+    // Per-channel debounce window (ms) for merging successive arrivals in the same
+    // channel into a single toast. 0 disables coalescing. Clamped to [0, 2000] in
+    // clampToastCaps. When >0, every native toast pays this much latency before
+    // showing — the trade-off being that bursts collapse instead of churning.
+    coalesceWindowMs: number;
+    // Minimum pool size — the floor for warm BrowserWindows kept ready. Auto-scales
+    // up via the stackSize + dmGroupThreshold + buffer formula, but never drops below
+    // this. Lowering saves ~15-40 MB per dropped window at idle in exchange for one
+    // cold create (~50-150 ms) on first toast after a quiet stretch. Clamped to
+    // [1, POOL_MIN_MAX] in clampToastCaps. Mostly affects users with tight caps
+    // (small stackSize+dmGroupThreshold) — for default caps the formula dominates.
+    poolMin: number;
 }
 
 export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
@@ -85,6 +97,22 @@ let debugEnabled = false;
 
 export function setDebug(_: IpcMainInvokeEvent, enabled: boolean): void {
     debugEnabled = !!enabled;
+}
+
+// Info-level companion to logErr — used for opt-in performance diagnostics so we can
+// actually measure burst-skip, coalescing, and pool behavior in the wild. Same dual
+// output: main-process console + Discord renderer devtools. Gated on the same
+// debugEnabled flag, so default users pay zero cost. Bare empty .catch on forwarding
+// for the same reason as logErr: never recurse on a forwarding failure.
+function logDiag(scope: string, msg: string): void {
+    if (!debugEnabled) return;
+    // eslint-disable-next-line no-console
+    console.log(`[NotificationsPlus:${scope}]`, msg);
+    if (senderWebContents && !senderWebContents.isDestroyed()) {
+        const tag = JSON.stringify(`[NotificationsPlus:${scope}]`);
+        const m = JSON.stringify(msg);
+        senderWebContents.executeJavaScript(`console.log(${tag}, ${m})`).catch(() => {});
+    }
 }
 
 function logErr(scope: string, err: unknown): void {
@@ -329,6 +357,33 @@ function extractNavData(notif: any): { channelId: string; messageId: string; } |
     return null;
 }
 
+// Fallback coalesce key when extractNavData returns null (e.g. Discord build doesn't
+// emit `launch=` in toastXml). Derived from the notification title using the same
+// "Username (#channel, Category)" parser as buildUpdateData. For server messages we
+// key on the channel context so multiple senders in the same channel coalesce; for
+// DMs we key on the sender username so each conversation coalesces independently.
+// Returns null if the title is empty or unparseable.
+function deriveFallbackCoalesceKey(title: string): string | null {
+    const raw = title.trim();
+    if (!raw) return null;
+    const ctxIdx = raw.search(/\s+\(#/);
+    if (ctxIdx === -1) {
+        // No (# context — treat as DM. Key by sender username.
+        return `dm:${raw}`;
+    }
+    // Server — extract (#channel, Category) substring as key, using the same
+    // balanced-paren walk as the title parser (category names may contain parens).
+    const openIdx = raw.indexOf("(", ctxIdx);
+    let depth = 0;
+    let closeIdx = -1;
+    for (let i = openIdx; i < raw.length; i++) {
+        if (raw[i] === "(") depth++;
+        else if (raw[i] === ")") { if (--depth === 0) { closeIdx = i; break; } }
+    }
+    if (closeIdx === -1) return null;
+    return `srv:${raw.slice(openIdx + 1, closeIdx)}`;
+}
+
 export function getDisplays(_: IpcMainInvokeEvent): DisplayInfo[] {
     const primary = screen.getPrimaryDisplay();
     return screen.getAllDisplays().map((d, i) => ({
@@ -423,6 +478,7 @@ function isDMTitle(title: string): boolean {
 }
 
 async function showToastInternal(options: ToastOptions, onClicked?: () => void): Promise<number> {
+    const t0 = performance.now();
     const isDM = isDMTitle(options.title);
     const corner = isDM ? options.dmCorner : options.corner;
     const displayIndex = isDM ? options.dmDisplayIndex : options.displayIndex;
@@ -452,6 +508,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
             if (!e.isGroup && e.addedAt < oldestAddedAt) oldestAddedAt = e.addedAt;
         }
         if (Date.now() - oldestAddedAt < BURST_THRESHOLD_MS) {
+            logDiag("burst-skip", `key=${toastKey} isDM=${isDM} oldestAgeMs=${Math.round(Date.now() - oldestAddedAt)} stackFull=${fullCountAtArrival}/${maxStack}`);
             if (isDM) {
                 const newCount = (evictedCounts.get(toastKey) ?? 0) + 1;
                 evictedCounts.set(toastKey, newCount);
@@ -483,6 +540,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         stack.splice(oldestIdx, 1);
         if (!oldest.win.isDestroyed()) oldest.win.close();
         fullCount--;
+        logDiag("evict", `key=${toastKey} isDM=${isDM} ageMs=${Math.round(Date.now() - oldest.addedAt)}`);
 
         if (isDM) {
             const newCount = (evictedCounts.get(toastKey) ?? 0) + 1;
@@ -523,6 +581,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         ? iconPathToDataUrl(options.iconPath)
         : Promise.resolve(options.icon);
     const [resolvedIcon, win] = await Promise.all([iconPromise, acquireWindow()]);
+    const tAcquire = performance.now();
 
     const entry: StackEntry = { win, h: TOAST_MIN_H, isGroup: false, addedAt: Date.now() };
     stack.unshift(entry);
@@ -551,6 +610,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // round-trip. Uses preload IPC when available (faster, structured clone), falls
     // back to executeJavaScript otherwise. Height is measured after forced layout.
     const contentH = await sendToastUpdate(win, updateData);
+    const tUpdate = performance.now();
     const measuredH = Math.max(TOAST_MIN_H, Math.min(contentH, TOAST_MAX_H));
 
     entry.h = measuredH;
@@ -606,14 +666,23 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         }, effectiveDuration * 1000);
     }
 
+    const tEnd = performance.now();
+    logDiag("toast.show",
+        `key=${toastKey} isDM=${isDM} acquire=${(tAcquire - t0).toFixed(1)}ms ` +
+        `update=${(tUpdate - tAcquire).toFixed(1)}ms ` +
+        `tail=${(tEnd - tUpdate).toFixed(1)}ms total=${(tEnd - t0).toFixed(1)}ms ` +
+        `measuredH=${measuredH}`);
+
     return win.id;
 }
 
 // Clamp stack/group caps once at the boundary so showToastInternal can trust them.
-// Mutates in place — both ToastOptions and ToastConfig carry the same two fields.
-function clampToastCaps(o: { stackSize: number; dmGroupThreshold: number; }): void {
+// Mutates in place — both ToastOptions and ToastConfig carry the same fields.
+function clampToastCaps(o: { stackSize: number; dmGroupThreshold: number; coalesceWindowMs?: number; poolMin?: number; }): void {
     o.stackSize = Math.max(1, Math.min(5, o.stackSize ?? 3));
     o.dmGroupThreshold = Math.max(2, o.dmGroupThreshold ?? 5);
+    o.coalesceWindowMs = Math.max(0, Math.min(2000, o.coalesceWindowMs ?? 200));
+    o.poolMin = Math.max(1, Math.min(POOL_MIN_MAX, o.poolMin ?? POOL_MIN_DEFAULT));
 }
 
 // IPC-callable version — renderer cannot pass function callbacks
@@ -726,22 +795,34 @@ function ensurePreload(): string | null {
     return preloadPath;
 }
 
-// Lower bound — always keep this many windows warm even before config arrives, so
-// the first toast after plugin load doesn't pay the cold-create cost.
-const POOL_MIN = 4;
-// Upper bound — generous but not unbounded; very large stack/group caps shouldn't
-// allocate dozens of BrowserWindows up front.
-const POOL_MAX = 12;
+// Default minimum pool size when no config is available yet — also the default value
+// for the user-configurable `poolMin` setting. Keeps the first toast after plugin load
+// from paying the cold-create cost.
+const POOL_MIN_DEFAULT = 4;
+// Upper bound on the user-configurable poolMin. Beyond this, idle RAM cost outpaces
+// the cold-create savings even on heavy-burst usage patterns.
+const POOL_MIN_MAX = 8;
+// Hard upper bound on total pool size regardless of formula or settings. Bumped from
+// 12 to 16 so users with the maximum stackSize (5) + a moderate dmGroupThreshold (10)
+// still get the full computed headroom instead of being clipped.
+const POOL_MAX = 16;
+// Buffer added on top of (stackSize + dmGroupThreshold) so the pool has a small
+// surplus beyond worst-case concurrent active windows — absorbs short overshoots
+// during arrivals that overlap with not-yet-closed eviction targets.
+const POOL_BUFFER = 2;
 const windowPool: BrowserWindow[] = [];
 
-// Auto-size the pool to (stackSize + dmGroupThreshold + 1) so worst-case concurrent
-// server + DM activity has buffers ready. Falls back to POOL_MIN when no config is
-// known yet (i.e. during the brief window between plugin start and renderer handshake).
+// Auto-size the pool to (stackSize + dmGroupThreshold + POOL_BUFFER) so worst-case
+// concurrent server + DM activity has buffers ready. Falls back to the user's poolMin
+// (or POOL_MIN_DEFAULT pre-handshake) when no config is known yet. Final value is
+// clamped to [poolMin, POOL_MAX] so individual users can shift the floor without
+// blowing past the hard ceiling.
 function targetPoolSize(): number {
     const cfg = mainToastConfig;
-    if (!cfg) return POOL_MIN;
-    const headroom = cfg.stackSize + cfg.dmGroupThreshold + 1;
-    return Math.max(POOL_MIN, Math.min(POOL_MAX, headroom));
+    const min = cfg?.poolMin ?? POOL_MIN_DEFAULT;
+    if (!cfg) return min;
+    const headroom = cfg.stackSize + cfg.dmGroupThreshold + POOL_BUFFER;
+    return Math.max(min, Math.min(POOL_MAX, headroom));
 }
 
 // Tracks when each pool window has finished loading the template HTML.
@@ -785,12 +866,31 @@ async function acquireWindow(): Promise<BrowserWindow> {
     while (windowPool.length > 0) {
         const w = windowPool.pop()!;
         if (!w.isDestroyed()) {
+            // Synchronous refill — replaces the previous `process.nextTick(warmPool)`.
+            // Under burst, multiple acquireWindow calls run interleaved at their await
+            // points; with deferred refill, several could see an empty pool before any
+            // nextTick fires. Synchronous refill guarantees the pool array is back to
+            // target before this acquire's await yields. warmPool is idempotent (no-op
+            // when already at target), so the only added cost is `new BrowserWindow()`
+            // for as many slots as were consumed since the last warmPool — typically 1.
+            //
+            // Note: the just-created windows are added immediately, but their loadURL
+            // is still pending. A subsequent acquireWindow popping one of them will
+            // still pay the cold loadURL cost (~50-150 ms) on its `await poolReady.get`.
+            // This is unavoidable without pre-creating the windows much earlier; what
+            // sync refill DOES fix is the "pool empty so we go MISS path and create yet
+            // another window we already had" double-create scenario.
+            warmPool();
             await poolReady.get(w);
-            process.nextTick(warmPool);
             return w;
         }
     }
-    process.nextTick(warmPool);
+    // Pool MISS — pool was truly empty (e.g. every entry's window had been destroyed).
+    // Pay the cold create+loadURL cost on the hot path. If this fires often in
+    // diagnostics, the user may want to raise `Pool minimum size` so the floor exceeds
+    // their typical burst length.
+    logDiag("pool", `MISS — cold-create (target=${targetPoolSize()})`);
+    warmPool();
     const w = createPoolWindow();
     await poolReady.get(w);
     return w;
@@ -967,6 +1067,104 @@ function repositionStack(
     }
 }
 
+// Per-channel debounce buffer. Keyed by channelId — Discord's channel IDs are globally
+// unique, so a single map serves DMs, server channels, and threads. The buffer always
+// holds the LATEST notification's content (newer wins); intermediate messages are dropped
+// in favor of the most recent one but contribute to the count shown in the title.
+// Timer is set on first arrival and NOT reset on subsequent arrivals — this caps the
+// per-toast latency at coalesceWindowMs regardless of burst length.
+interface CoalesceBuffer {
+    timer: ReturnType<typeof setTimeout>;
+    count: number;
+    notif: any;
+    rawTitle: string;
+    rawBody: string;
+    avatarPath: string;
+    navData: { channelId: string; messageId: string; } | null;
+    // Wall-clock of the first arrival in this buffer — used by diagnostics to log
+    // the ACTUAL flush latency, which may exceed coalesceWindowMs under event-loop
+    // pressure (the setTimeout is a floor, not a ceiling).
+    firstAddedAt: number;
+}
+const coalesceBuffers = new Map<string, CoalesceBuffer>();
+
+function flushCoalesceBuffer(channelId: string): void {
+    const buf = coalesceBuffers.get(channelId);
+    if (!buf) return;
+    coalesceBuffers.delete(channelId);
+    const cfg = mainToastConfig;
+    if (!cfg) return;
+    logDiag("coalesce-flush", `channel=${channelId} count=${buf.count} latencyMs=${Date.now() - buf.firstAddedAt}`);
+    // Append "(N new)" to the raw title BEFORE template substitution so it appears
+    // ahead of the (#channel, Category) context that buildUpdateData parses out. The
+    // title parser in buildUpdateData looks for `\s+\(#` to find the context group,
+    // so "Alice (3 new) (#general, Chat)" still parses correctly as displayName=
+    // "Alice (3 new)" / channel=#general / category=Chat. For DMs ("Alice"), the
+    // result is just "Alice (3 new)" / "Direct Message".
+    const titleWithCount = buf.count > 1 ? `${buf.rawTitle} (${buf.count} new)` : buf.rawTitle;
+    emitToast(cfg, buf.notif, titleWithCount, buf.rawBody, buf.avatarPath, buf.navData);
+}
+
+function flushAllCoalesceBuffers(): void {
+    // Take a snapshot so flushCoalesceBuffer's delete doesn't mutate during iteration.
+    const keys = Array.from(coalesceBuffers.keys());
+    for (const k of keys) {
+        const buf = coalesceBuffers.get(k);
+        if (buf) clearTimeout(buf.timer);
+        flushCoalesceBuffer(k);
+    }
+}
+
+function emitToast(
+    cfg: ToastConfig,
+    notifInstance: any,
+    rawTitle: string,
+    rawBody: string,
+    avatarPath: string,
+    navData: { channelId: string; messageId: string; } | null
+): void {
+    const onClicked = cfg.redirectOnClick ? () => {
+        // Emit click so Discord focuses its window and navigates to the channel.
+        notifInstance.emit("click");
+        if (!senderWebContents || senderWebContents.isDestroyed()) return;
+        // After a short pause, scroll to the specific message that triggered the toast.
+        // Preferred path: navData (channelId+messageId from toastXml) → call jumpToMessage
+        // directly. Fallback path (when Discord omits launch from toastXml — which is
+        // the current behavior on at least one build): defer to a renderer-side helper
+        // `__npJumpFromTitle` that parses the title's "(#channel, Category)" context and
+        // looks up the channel's most-recent message via a FluxDispatcher subscription
+        // installed by index.tsx.
+        setTimeout(() => {
+            if (!senderWebContents || senderWebContents.isDestroyed()) return;
+            if (navData) {
+                const cId = JSON.stringify(navData.channelId);
+                const mId = JSON.stringify(navData.messageId);
+                senderWebContents.executeJavaScript(
+                    `(function(){try{` +
+                    `var m=window?.Vencord?.Webpack?.findByProps?.("jumpToMessage");` +
+                    `m?.jumpToMessage?.({channelId:${cId},messageId:${mId},flash:true});` +
+                    `}catch(e){}})();`
+                ).catch(err => logErr("jump-to-message", err));
+            } else {
+                const t = JSON.stringify(rawTitle);
+                senderWebContents.executeJavaScript(
+                    `(function(){try{window.__npJumpFromTitle&&window.__npJumpFromTitle(${t});}catch(e){}})();`
+                ).catch(err => logErr("jump-from-title", err));
+            }
+        }, 300);
+    } : undefined;
+
+    showToastInternal({
+        ...cfg,
+        title: cfg.titleTemplate.replace("{title}", rawTitle),
+        body: cfg.bodyTemplate.replace("{body}", rawBody),
+        icon: cfg.iconUrl || "",
+        // If user has a custom iconUrl override, no path-read is needed. Otherwise pass
+        // the raw path so showToastInternal resolves it only on the surviving path.
+        iconPath: cfg.iconUrl ? "" : avatarPath,
+    }, onClicked);
+}
+
 async function processNotification(notif: InstanceType<typeof ElectronNotification>): Promise<void> {
     const cfg = mainToastConfig;
     if (!cfg) return;
@@ -987,38 +1185,64 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
         avatarPath = extractImageFromToastXml(xml);
     }
 
-    const notifInstance = notif as any;
-    const navData = cfg.redirectOnClick ? extractNavData(notifInstance) : null;
-    const onClicked = cfg.redirectOnClick ? () => {
-        // Emit click so Discord focuses its window and navigates to the channel.
-        notifInstance.emit("click");
-        // After a short pause, use executeJavaScript to call Vencord's webpack
-        // jumpToMessage directly in the Discord renderer — this scrolls to the
-        // specific message rather than just opening the channel.
-        if (navData && senderWebContents && !senderWebContents.isDestroyed()) {
-            setTimeout(() => {
-                if (!senderWebContents || senderWebContents.isDestroyed()) return;
-                const cId = JSON.stringify(navData.channelId);
-                const mId = JSON.stringify(navData.messageId);
-                senderWebContents.executeJavaScript(
-                    `(function(){try{` +
-                    `var m=window?.Vencord?.Webpack?.findByProps?.("jumpToMessage");` +
-                    `m?.jumpToMessage?.({channelId:${cId},messageId:${mId},flash:true});` +
-                    `}catch(e){}})();`
-                ).catch(err => logErr("jump-to-message", err));
-            }, 300);
-        }
-    } : undefined;
+    // Nav data is needed by either redirectOnClick (jump-to-message) or coalescing
+    // (channelId as buffer key). Skip the regex work when neither is on.
+    const needsNavData = cfg.redirectOnClick || cfg.coalesceWindowMs > 0;
+    const navData = needsNavData ? extractNavData(notif as any) : null;
 
-    showToastInternal({
-        ...cfg,
-        title: cfg.titleTemplate.replace("{title}", title),
-        body: cfg.bodyTemplate.replace("{body}", body),
-        icon: cfg.iconUrl || "",
-        // If user has a custom iconUrl override, no path-read is needed. Otherwise pass
-        // the raw path so showToastInternal resolves it only on the surviving path.
-        iconPath: cfg.iconUrl ? "" : avatarPath,
-    }, onClicked);
+    // Pick a coalesce key: prefer the real channelId (precise, survives renames);
+    // fall back to a title-derived key when navData extraction fails. The fallback
+    // keys server messages on "(#channel, Category)" so multiple senders in the same
+    // channel coalesce together, and keys DMs on the sender username.
+    const coalesceKey = cfg.coalesceWindowMs > 0
+        ? (navData ? `id:${navData.channelId}` : deriveFallbackCoalesceKey(title))
+        : null;
+
+    // Coalesce-decision diagnostic — gated on npDebug. Tells you (a) that
+    // processNotification fired at all (only fires on real Discord notifications,
+    // NOT on the "Send test notification" button which calls Native.showToast directly),
+    // (b) whether navData extraction succeeded, and (c) the actual key being used —
+    // either the real channelId or the title-derived fallback.
+    if (debugEnabled) {
+        const xmlHasLaunch = !!xml && /\blaunch=/i.test(xml);
+        logDiag("nav-extract",
+            `channelId=${navData?.channelId ?? "null"} messageId=${navData?.messageId ?? "null"} ` +
+            `xmlHasLaunch=${xmlHasLaunch} coalesceOn=${cfg.coalesceWindowMs > 0} ` +
+            `key=${coalesceKey ?? "null"} willCoalesce=${!!coalesceKey}`);
+    }
+
+    // Coalescing path: when enabled AND we have a key (real channelId or title-derived
+    // fallback), route through the per-channel debounce buffer. Notifications with no
+    // usable key fall through to direct emit so they never get held up.
+    if (coalesceKey) {
+        const key = coalesceKey;
+        const existing = coalesceBuffers.get(key);
+        if (existing) {
+            // Burst continuation — update with latest content, bump count. Timer is
+            // intentionally NOT reset so the user sees the toast at most cfg.coalesceWindowMs
+            // after the first message arrived, regardless of how long the burst runs.
+            existing.count++;
+            existing.notif = notif;
+            existing.rawTitle = title;
+            existing.rawBody = body;
+            existing.avatarPath = avatarPath;
+            existing.navData = navData;
+            return;
+        }
+        coalesceBuffers.set(key, {
+            timer: setTimeout(() => flushCoalesceBuffer(key), cfg.coalesceWindowMs),
+            count: 1,
+            notif,
+            rawTitle: title,
+            rawBody: body,
+            avatarPath,
+            navData,
+            firstAddedAt: Date.now(),
+        });
+        return;
+    }
+
+    emitToast(cfg, notif, title, body, avatarPath, navData);
 }
 
 let mainOriginalShow: (() => void) | null = null;
@@ -1047,8 +1271,13 @@ export function startMainProcessPatch(e: IpcMainInvokeEvent, config: ToastConfig
 }
 
 export function updateMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfig): void {
+    const wasCoalescing = (mainToastConfig?.coalesceWindowMs ?? 0) > 0;
     clampToastCaps(config);
     mainToastConfig = config;
+    // If the user disabled coalescing while buffers held pending notifications, flush
+    // them now so those messages don't sit indefinitely waiting for a timer that no
+    // longer matches user intent.
+    if (wasCoalescing && config.coalesceWindowMs === 0) flushAllCoalesceBuffers();
     // Settings change may raise stack/group caps — top up the pool if needed.
     setImmediate(() => warmPool());
     ensureFontCached(config.font).catch(() => {});
@@ -1067,6 +1296,9 @@ export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
     evictedCounts.clear();
     fontCache.clear();
     iconCache.clear();
+    // Drop any pending coalesce buffers — plugin is off, no toasts should emit.
+    for (const buf of coalesceBuffers.values()) clearTimeout(buf.timer);
+    coalesceBuffers.clear();
     for (const timer of pendingReposition.values()) clearTimeout(timer);
     pendingReposition.clear();
     pendingMoves.clear();

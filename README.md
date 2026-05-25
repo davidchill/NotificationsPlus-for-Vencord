@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.2.1`
+`0.3.0`
 
 ## What it does
 
@@ -69,6 +69,9 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 | Duration | Number (seconds, 0 = until clicked) | 5 |
 | Max stacked toasts | Number (1–5) | 3 |
 | Click opens message in Discord | Toggle | On |
+| Show above all other windows | Toggle | On |
+| Coalesce window (ms, 0 = off) | Number (0–2000) | 200 |
+| Pool minimum size | Number (1–8) | 4 |
 
 ### Custom native toast — appearance & content
 
@@ -93,7 +96,14 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 |---|---|---|
 | Log internal errors to devtools | Toggle | Off |
 
-When enabled, internal errors are logged to Discord's renderer devtools console (`Ctrl+Shift+I` → Console tab) with a `[NotificationsPlus:<scope>]` tag. Useful when reporting bugs or diagnosing why a font / icon / notification isn't behaving.
+When enabled, both internal errors AND opt-in performance diagnostics are logged to Discord's renderer devtools console (`Ctrl+Shift+I` → Console tab) with `[NotificationsPlus:<scope>]` tags. Useful for reporting bugs or measuring burst behavior. Emitted scopes include:
+
+- `toast.show` — per-toast pipeline timing (`acquire`, `update`, `tail`, `total`, `measuredH`)
+- `burst-skip` — when the burst-skip guard drops an arrival (`oldestAgeMs`, `stackFull`)
+- `coalesce-flush` — when the coalesce timer emits a buffered toast (`channel`, `count`, `latencyMs`)
+- `evict` — when the stack-cap evicts an old toast (`ageMs`)
+- `pool` — when `acquireWindow` falls through to cold-create (a pool MISS)
+- `nav-extract` — per-notification key-decision log so you can verify the coalesce buffer is engaging
 
 The settings panel also lists all connected monitors with their index, label, and resolution so you always know which index to enter.
 
@@ -120,6 +130,12 @@ Each pool window pre-loads a single static template page (`TEMPLATE_HTML`) at cr
 **Toast stacking:** Up to N toasts can be visible simultaneously per display+corner combination (N = "Max stacked toasts", 1–5, default 3 for server messages). Toasts are ordered newest-closest-to-corner, oldest furthest away. `repositionStack()` recomputes all positions as absolute values from the corner edge on every insert and after every height measurement, eliminating the race-condition drift that relative delta-shifting would produce with concurrent notifications. A new toast's slot at the corner is set synchronously before show (so it appears at the right position with no jump); the shifts of existing toasts are routed through a per-stack scheduled reposition so concurrent arrivals in the same tick coalesce into one full-stack pass.
 
 **Burst-skip:** When the stack is at cap and the oldest visible toast is still younger than 500 ms, a new arrival is skipped — for DMs it feeds the "N earlier messages" group counter, for servers it's a silent drop. This prevents the create→show→evict→close churn that would otherwise fire for every burst arrival past the cap when a high-traffic server set to "All Messages" lights up. Avatar disk reads are deferred until after this check, so dropped bursts pay no I/O, and the surviving toast's avatar resolve is parallelized with the BrowserWindow pool acquire.
+
+**Per-channel coalescing:** A second burst-management layer that operates BEFORE the toast pipeline. When `Coalesce window (ms)` is greater than zero (default 200 ms), successive messages in the same channel within the window merge into a single toast titled with the latest sender's name plus `"(N new)"`. The coalesce key is the real `channelId` when Discord includes one in `toastXml`; on builds where Discord no longer emits `launch=`, a fallback key is derived from the title's "(#channel, Category)" substring (server messages) or sender username (DMs). The buffer timer is not reset on subsequent arrivals — per-toast latency is bounded at exactly `coalesceWindowMs` regardless of burst length. Notifications without a derivable key fall through to immediate emit. Set to 0 to disable.
+
+**Pool floor:** The BrowserWindow pool auto-scales to `max(poolMin, min(POOL_MAX, stackSize + dmGroupThreshold + POOL_BUFFER))`. `poolMin` is user-configurable (1–8, default 4); `POOL_MAX = 16`, `POOL_BUFFER = 2`. For default caps the auto-scale formula dominates and `poolMin` is a no-op; for users with tight caps (small stack + group thresholds), lowering `poolMin` reclaims idle RAM at the cost of one cold-create on first toast after a quiet stretch. `acquireWindow` refills the pool synchronously after every pop so concurrent acquires in the same tick never see a draining pool.
+
+**Jump-to-message:** When `Click opens message in Discord` is on, clicking the toast scrolls Discord to the specific triggering message. The native click handler prefers the real `(channelId, messageId)` pair extracted from `toastXml`'s `launch=` attribute when available; when Discord doesn't emit `launch=` (current behavior on at least one build), the renderer subscribes to `MESSAGE_CREATE` via `FluxDispatcher` and maintains an LRU `Map<"#channel-name, Category", {channelId, messageId}>` (capped at 200 entries). The native click handler then invokes `window.__npJumpFromTitle(rawTitle)`, which parses the title for the channel context and looks up the most-recent message in that channel for `jumpToMessage`. DMs continue to fall back to `notif.emit("click")` (opens the channel without scrolling).
 
 **DM-specific behavior:** Direct message toasts route to a separate display+corner stack configured in "Direct Message Placement" settings. When "Stay open until dismissed" is on, DM toasts have no timer and never auto-close. When the number of undismissed DM toasts exceeds the "Group after N messages" threshold, the oldest is evicted and a compact 52px group summary window ("N earlier messages") appears at the bottom of the DM stack. The count updates live without reloading the window. Dismissing the group window resets the overflow counter.
 
