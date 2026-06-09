@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.3.2 — 2026-06-08
+
+A small polish pass: a visual fallback when an avatar fails to load, and a micro-optimization that stops re-searching the webpack module cache on every toast click. No new settings, no behavioral changes for the happy path.
+
+### Fixed
+
+- **Broken avatars fall back to the Discord logo** — when a toast's avatar image fails to load (404, malformed data URI, a deliberately-broken `Icon URL override`), the `onerror` handler now replaces it with the Discord glyph (`iw.innerHTML = SVG`) instead of `display:none`, which previously left an empty accent-colored circle. Applied to both presentation paths in `toastTemplate.ts`: the preferred preload `applyUpdate` and the inline `__npUpdate` fallback.
+
+### Changed
+
+- **`jumpToMessage` webpack lookup is memoized** — the redirect-on-click "scroll to message" handler previously called `findByProps("jumpToMessage")` on every click, re-walking Discord's module cache each time. The module reference is stable for the session, so it's now cached on `window.__npJumpMod` and reused. Both renderer click paths share the one cache: `index.tsx`'s new `getJumpModule()` helper (used by `__npJumpFromTitle`) and `native.ts`'s injected `navData` click handler. The value is cached only once a non-null result is found, so an early click before the module has loaded still retries rather than caching a permanent miss. `uninstallJumpHelper()` clears `window.__npJumpMod` alongside `window.__npJumpFromTitle` on stop.
+
+### Bundle checklist (this release)
+- `toastTemplate.ts` — avatar `onerror` fallback to SVG in both `applyUpdate` (preload) and `__npUpdate` (inline)
+- `index.tsx` — `getJumpModule()` memoized helper, `__npJumpMod` cleanup in `uninstallJumpHelper`
+- `native.ts` — injected click handler reads/writes the shared `window.__npJumpMod` cache
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump
+
 ## v0.3.1 — 2026-06-08
 
 A focused reliability pass: two small, self-contained fixes — one positioning correctness bug, one fail-safe for the notification interception path. No new settings, no behavioral changes for the happy path.

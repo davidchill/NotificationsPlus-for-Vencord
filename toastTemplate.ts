@@ -88,7 +88,9 @@ window.__npUpdate=function(d){
   if(d.icon){
     var img=document.createElement('img');
     img.className='icon';img.src=d.icon;
-    img.onerror=function(){this.style.display='none';};
+    // On load failure (404, bad data URI) fall back to the Discord glyph instead of
+    // leaving an empty accent-colored circle.
+    img.onerror=function(){iw.innerHTML=SVG;};
     iw.innerHTML='';iw.appendChild(img);
   }else{iw.innerHTML=SVG;}
   document.getElementById('ttl').textContent=d.title;
@@ -155,7 +157,9 @@ function applyUpdate(d) {
     const img = document.createElement("img");
     img.className = "icon";
     img.src = d.icon;
-    img.onerror = function () { this.style.display = "none"; };
+    // On load failure (404, bad data URI) fall back to the Discord glyph instead of
+    // leaving an empty accent-colored circle.
+    img.onerror = function () { iw.innerHTML = SVG; };
     iw.innerHTML = "";
     iw.appendChild(img);
   } else {

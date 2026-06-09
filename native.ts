@@ -1145,7 +1145,11 @@ function emitToast(
                 const mId = JSON.stringify(navData.messageId);
                 senderWebContents.executeJavaScript(
                     `(function(){try{` +
-                    `var m=window?.Vencord?.Webpack?.findByProps?.("jumpToMessage");` +
+                    // Reuse the cached module if a prior lookup found it; only search (and
+                    // cache) when it's not yet set, so this doesn't re-walk the module cache
+                    // on every click. Shares window.__npJumpMod with index.tsx's helper.
+                    `var m=window.__npJumpMod;` +
+                    `if(!m){m=window?.Vencord?.Webpack?.findByProps?.("jumpToMessage");if(m)window.__npJumpMod=m;}` +
                     `m?.jumpToMessage?.({channelId:${cId},messageId:${mId},flash:true});` +
                     `}catch(e){}})();`
                 ).catch(err => logErr("jump-to-message", err));

@@ -189,6 +189,18 @@ function onMessageCreate(payload: { message?: { channel_id?: string; id?: string
     }
 }
 
+// The jumpToMessage module is stable for the session, so memoize the webpack search
+// instead of re-walking the module cache on every toast click. Cached on window.__npJumpMod
+// so this helper and native.ts's injected click handler share one lookup. Only cached once
+// a non-null result is found, so an early click before the module loads still retries.
+function getJumpModule(): any {
+    const w = window as any;
+    if (!w.__npJumpMod) {
+        w.__npJumpMod = w.Vencord?.Webpack?.findByProps?.("jumpToMessage") ?? null;
+    }
+    return w.__npJumpMod;
+}
+
 function installJumpHelper() {
     (window as any).__npJumpFromTitle = function (rawTitle: string) {
         try {
@@ -207,14 +219,14 @@ function installJumpHelper() {
             const key = rawTitle.slice(openIdx + 1, closeIdx); // "#channel-name, Category"
             const nav = recentMessageByChannelKey.get(key);
             if (!nav) return;
-            const jumpModule = (window as any).Vencord?.Webpack?.findByProps?.("jumpToMessage");
-            jumpModule?.jumpToMessage?.({ channelId: nav.channelId, messageId: nav.messageId, flash: true });
+            getJumpModule()?.jumpToMessage?.({ channelId: nav.channelId, messageId: nav.messageId, flash: true });
         } catch { /* swallow — never let a click handler throw */ }
     };
 }
 
 function uninstallJumpHelper() {
     delete (window as any).__npJumpFromTitle;
+    delete (window as any).__npJumpMod;
 }
 
 // ── Settings UI ──────────────────────────────────────────────────────────────
