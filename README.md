@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.3.0`
+`0.3.1`
 
 ## What it does
 
@@ -142,7 +142,7 @@ Each pool window pre-loads a single static template page (`TEMPLATE_HTML`) at cr
 `native.ts` exports:
 
 - `getDisplays()` — calls `electron.screen.getAllDisplays()` and returns display metadata
-- `showToast(options)` — IPC-callable; acquires a pre-created `BrowserWindow` from the pool (frameless, transparent, always-on-top, `focusable: false`), positions it at exact pixel coordinates computed from the target display's bounds plus corner and offsets, updates the pre-loaded template via the preload IPC channel (or `__npUpdate` fallback), and auto-closes after the configured duration
+- `showToast(options)` — IPC-callable; acquires a pre-created `BrowserWindow` from the pool (frameless, transparent, always-on-top, `focusable: false`), positions it at exact pixel coordinates computed from the target display's work area (bounds minus the taskbar/reserved regions) plus corner and offsets, updates the pre-loaded template via the preload IPC channel (or `__npUpdate` fallback), and auto-closes after the configured duration
 - `startMainProcessPatch(config)` / `updateMainProcessPatch(config)` / `stopMainProcessPatch()` — manage the prototype patch and keep toast config in sync with renderer settings; `clampToastCaps` runs once at each entry so the hot path can trust the values
 - `setDebug(enabled)` — toggles the diagnostics logger (`logErr`), which forwards scoped error messages to Discord's renderer devtools console when on
 

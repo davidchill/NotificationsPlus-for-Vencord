@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.1 — 2026-06-08
+
+A focused reliability pass: two small, self-contained fixes — one positioning correctness bug, one fail-safe for the notification interception path. No new settings, no behavioral changes for the happy path.
+
+### Fixed
+
+- **Toasts no longer render under the Windows taskbar** — all per-display positioning now derives from `display.workArea` instead of `display.bounds`. `bounds` is the entire physical panel; `workArea` excludes the taskbar and other OS-reserved regions. Previously, a bottom-corner toast (the default `bottom-right`) with a small vertical offset had its lower edge — including the timer bar — tucked behind the taskbar. The fix touches the two sites in `native.ts` that turn a monitor into a positioning rectangle (the DM burst-skip group-window path and the main `showToastInternal` path); everything downstream (toast positioning, group windows, `repositionStack`) flows from those, so the single change covers every code path. The Settings "Monitor" list continues to report full `bounds` resolution, which is correct there.
+- **Notification interception now fails safe** — `ElectronNotification.prototype.show` was overridden to call `processNotification(this)` fire-and-forget. Because `processNotification` is async and the original OS `show()` had already been bypassed, any thrown error produced an unhandled rejection AND silently dropped the notification entirely — the user got nothing. The override now wraps the call in `.catch()`: on any error it logs via `logErr` (when `npDebug` is on) and falls back to Discord's native `mainOriginalShow.call(this)` so the user always receives at least the OS notification. No visible difference on the happy path; this is insurance against the toast pipeline ever throwing.
+
+### Bundle checklist (this release)
+- `native.ts` — `workArea` positioning fix (2 sites) + fail-safe fallback in the `show` override
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump, "How it works" wording updated from "bounds" to "work area"
+
 ## v0.3.0 — 2026-05-24
 
 A multi-feature release driven by real-world burst diagnostics. Adds per-channel coalescing, restores jump-to-message after Discord silently stopped emitting `launch=` in `toastXml`, exposes the BrowserWindow pool floor as a user setting, and ships an opt-in performance diagnostics suite that made every change in this release measurable end-to-end.

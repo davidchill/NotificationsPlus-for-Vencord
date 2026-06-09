@@ -513,7 +513,9 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
                 const newCount = (evictedCounts.get(toastKey) ?? 0) + 1;
                 evictedCounts.set(toastKey, newCount);
                 const display = screen.getAllDisplays()[displayIndex] ?? screen.getPrimaryDisplay();
-                const dBounds = display.bounds;
+                // workArea (not bounds) excludes the taskbar/reserved areas, so toasts in
+                // bottom corners don't render under the Windows taskbar.
+                const dBounds = display.workArea;
                 const dIsRight = corner.endsWith("right");
                 const dIsBottom = corner.startsWith("bottom");
                 const existingGroup = stack.find(e => e.isGroup);
@@ -550,7 +552,9 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
 
     const displays = screen.getAllDisplays();
     const display = displays[displayIndex] ?? screen.getPrimaryDisplay();
-    const { bounds } = display;
+    // Use workArea, not bounds, so bottom-corner toasts sit above the taskbar
+    // instead of being partially hidden behind it.
+    const bounds = display.workArea;
     const isRight = corner.endsWith("right");
     const isBottom = corner.startsWith("bottom");
 
@@ -1266,7 +1270,14 @@ export function startMainProcessPatch(e: IpcMainInvokeEvent, config: ToastConfig
             mainOriginalShow!.call(this);
             return;
         }
-        processNotification(this);
+        // processNotification is async and was previously called fire-and-forget. If any
+        // step threw, the rejection was unhandled AND the notification vanished silently —
+        // the original OS show() had already been bypassed. Fail safe: on any error, log it
+        // and fall back to Discord's native notification so the user still gets *something*.
+        processNotification(this).catch(err => {
+            logErr("processNotification", err);
+            try { mainOriginalShow!.call(this); } catch { /* last resort — nothing else to do */ }
+        });
     };
 }
 
