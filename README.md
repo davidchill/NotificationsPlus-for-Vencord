@@ -4,13 +4,53 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.3.2`
+`0.4.0`
+
+## Install
+
+NotificationsPlus is a **userplugin**. Userplugins are compiled into the Vencord bundle at build time, so they only exist in a build made from source — the stable Vencord release downloaded by the standalone installer can never contain this plugin.
+
+1. Clone Vencord from source and place this repo at `Vencord/src/userplugins/notificationsPlus`.
+2. From the Vencord root, install dependencies and build:
+
+   ```
+   pnpm i
+   pnpm build
+   ```
+
+3. Fully quit Discord — tray icon -> Quit, not just closing the window — then patch it:
+
+   ```
+   pnpm inject
+   ```
+
+4. Relaunch Discord. The plugin appears in Vencord Settings -> Plugins as **NotificationsPlus**.
+
+After editing plugin source, re-run `pnpm build` and fully restart Discord. `pnpm inject` only needs to be run once.
+
+### Important: do not use the standalone Vencord Installer
+
+`pnpm inject` runs the installer with `VENCORD_DEV_INSTALL=1`, which points Discord at **this repo's** `dist/`. The standalone Vencord Installer executable points Discord at `%APPDATA%\Vencord\dist` — the stable release instead.
+
+If you ever run the standalone installer, Vencord keeps working but NotificationsPlus silently disappears, because the stable bundle has no userplugins in it. Fix it by re-running `pnpm inject` from the Vencord repo.
+
+To check which build Discord is actually loading, read the injection stub — it is a single `require()` line naming the `patcher.js` in use:
+
+```
+cat "$LOCALAPPDATA/Discord/app-*/resources/app.asar"
+```
+
+### Discord updates
+
+Injection survives Discord updates on its own. Vencord's `patchWin32Updater` re-applies the patch to each new `app-<version>` folder, preserving whichever `dist` path the original injection pointed at. That is why a one-time `pnpm inject` keeps working for months — and also why an accidental run of the standalone installer keeps restoring the *stable* path until you re-inject.
 
 ## What it does
 
 **In-app notifications:** Vencord's built-in overlay supports only top-right and bottom-right. NotificationsPlus adds all four corners with configurable pixel offsets.
 
 **Native OS toasts:** An optional toggle intercepts Discord's native OS notifications and replaces them with a custom Electron `BrowserWindow` — a frameless, always-on-top window you control completely. This enables monitor selection, per-corner positioning, click-to-navigate, custom content templates, toast stacking, DM-specific positioning and persistence, and icon overrides that the OS notification API doesn't support.
+
+**Friend highlighting:** Toasts from people on your friends list can be set apart with a star badge, an accent-color swap, a name prefix, or any combination of the three.
 
 **Sound suppression:** A standalone toggle that mutes Discord's notification ping audio without touching the visual notification.
 
@@ -90,6 +130,17 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 | Body template | String — use `{body}` | `{body}` |
 | Icon URL | String (overrides sender avatar; leave blank to use avatar) | *(blank)* |
 
+### Custom native toast — friend highlight
+
+| Setting | Options / Type | Default |
+|---|---|---|
+| Visually identify messages from people on your friends list | Toggle | On |
+| Star badge by the name | Toggle | On |
+| Recolor toast accent | Toggle | On |
+| Friend accent color | Color picker (only visible when recolor is on) | `#f0b232` |
+| Prefix the name with a label | Toggle | Off |
+| Name prefix text | String (only visible when prefix is on) | `★ ` |
+
 ### Diagnostics
 
 | Setting | Options / Type | Default |
@@ -104,6 +155,7 @@ When enabled, both internal errors AND opt-in performance diagnostics are logged
 - `evict` — when the stack-cap evicts an old toast (`ageMs`)
 - `pool` — when `acquireWindow` falls through to cold-create (a pool MISS)
 - `nav-extract` — per-notification key-decision log so you can verify the coalesce buffer is engaging
+- `icon-cache` — avatar LRU hit/miss ratio, entry count and resolved temp path; flags `STALE` when a cached entry's byte size no longer matches the file on disk
 
 The settings panel also lists all connected monitors with their index, label, and resolution so you always know which index to enter.
 
@@ -119,13 +171,15 @@ On `start()`, the plugin writes four CSS custom properties (`--np-top`, `--np-bo
 
 **Toast layout — direct messages:** Detected when the notification title has no `(#channel, Category)` suffix. DM toasts display Username / "Direct Message" / Message body, and use a green (`#23a55a`) accent color throughout — border, icon background, timer bar, and the "Direct Message" label.
 
-The sender's avatar is embedded in `toastXml` as a local temp file path; the plugin reads it immediately in the main process and converts it to a base64 data URI so it can be inlined into the toast HTML (a sandboxed `BrowserWindow` cannot load bare file paths from a `data:` page).
+**Friend highlighting:** The main process only ever sees a `toastXml` blob with no author ID, so it cannot tell whether a message came from a friend. The renderer can: `onMessageCreate` checks `RelationshipStore.isFriend` and pushes the result to main keyed by message ID via `noteFriendStatus`, where `processNotification` resolves it from the ID returned by `extractNavData`. Only friends are pushed — main treats a missing entry as "not a friend", so pushing non-friends would cost an `ipcRenderer.invoke` round trip per message account-wide while carrying no information. The three styles are independent toggles under one master switch: a star badge beside the name, an accent swap that recolors border, glow, channel line and badge, and a configurable name prefix. Resolution is best-effort by design: if the note has not arrived by the time the toast builds, it simply renders without the highlight.
 
-**BrowserWindow pooling:** Hidden toast windows are pre-created at plugin start and kept warm. The pool size auto-scales between 4 (minimum) and 12 (maximum), targeting `stackSize + dmGroupThreshold + 1` so worst-case concurrent server + DM activity always has buffers ready. When a notification arrives, one is grabbed from the pool instantly — no 100–200ms Chromium process spawn on the hot path. After each acquire, a replacement is created asynchronously via `process.nextTick`. Pool warm-up is deferred to `setImmediate` at plugin start so the IPC returns instantly. The pool is drained on plugin stop.
+The sender's avatar is embedded in `toastXml` as a local temp file path; the plugin reads it in the main process and converts it to a base64 data URI so it can be inlined into the toast HTML (a sandboxed `BrowserWindow` cannot load bare file paths from a `data:` page). Results are held in a 50-entry LRU keyed by that path. The `icon-cache` diagnostic scope reports the hit rate and flags stale entries, since whether that cache is worth anything depends on whether Discord reuses those temp paths across notifications.
+
+**BrowserWindow pooling:** Hidden toast windows are pre-created at plugin start and kept warm. The pool size auto-scales between the configurable floor (`Pool minimum size`, default 4) and 16 (maximum), targeting `stackSize + dmGroupThreshold + 2` so worst-case concurrent server + DM activity always has buffers ready. When a notification arrives, one is grabbed from the pool instantly — no 100–200ms Chromium process spawn on the hot path. After each acquire the pool is refilled synchronously, so concurrent acquires in the same tick never see a draining pool. Pool warm-up is deferred to `setImmediate` at plugin start so the IPC returns instantly. The pool is drained on plugin stop.
 
 Each pool window pre-loads a single static template page (`TEMPLATE_HTML`) at creation time via `loadURL` and attaches a **preload script** (`PRELOAD_SRC`, written once per Discord launch to `app.getPath('temp')`) that listens for `np:update` and `np:close-animate` IPC events. When a notification arrives, the main process calls `webContents.send('np:update', data)` — Electron uses structured-clone serialization, which is faster than the previous `executeJavaScript` + JSON.stringify + V8 eval round-trip. The preload reports the rendered `scrollHeight` back via a one-shot reply channel, combining content update and height measurement into a single round-trip. If the preload file write ever fails, the plugin silently falls back to the legacy `executeJavaScript` path (which is why `__npUpdate` is still embedded in `TEMPLATE_HTML`). Sandbox stays on; contextIsolation stays on. Content height is capped at 400 px.
 
-**Font handling:** Google Fonts CSS and `.woff2` files are fetched in parallel at plugin start (using `Promise.all`) via Electron's `net.request` module — respects system proxy settings, has a 10-second per-request timeout that aborts hung connections, and rejects on non-2xx/3xx status codes. Files are base64-encoded and cached in memory as data URIs; every toast gets the font inlined — zero network requests per notification. System font choices (Segoe UI, Arial) skip the fetch entirely. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
+**Font handling:** Google Fonts CSS and `.woff2` files are fetched in parallel at plugin start (using `Promise.all`) via Electron's `net.request` module — respects system proxy settings, has a 10-second per-request timeout that aborts hung connections, and rejects on non-2xx/3xx status codes. Files are base64-encoded and cached in memory as data URIs, so there are zero network requests per notification. That cached string is large — for the default Nunito it is 20 `.woff2` files across 5 unicode subsets, roughly 716 KB of base64 — so it is pushed to each toast window **once**, over a dedicated `np:font` IPC channel fired as soon as that window's `loadURL` resolves during background pool warm-up. It is deliberately not part of the per-toast update payload: sending it per toast meant structured-cloning ~716 KB and forcing a full CSSOM reparse in front of the height measurement that `win.show()` waits on. A `WeakMap` stamp of font name plus CSS length keeps the per-toast check to a comparison, while still re-pushing to any window warmed before the download finished or before a font change. System font choices (Segoe UI, Arial) skip the fetch entirely and push an empty string, which correctly clears a previously-applied webfont. Right-clicking anywhere on the toast dismisses it immediately; because the window is frameless, Electron shows no context menu.
 
 **Toast stacking:** Up to N toasts can be visible simultaneously per display+corner combination (N = "Max stacked toasts", 1–5, default 3 for server messages). Toasts are ordered newest-closest-to-corner, oldest furthest away. `repositionStack()` recomputes all positions as absolute values from the corner edge on every insert and after every height measurement, eliminating the race-condition drift that relative delta-shifting would produce with concurrent notifications. A new toast's slot at the corner is set synchronously before show (so it appears at the right position with no jump); the shifts of existing toasts are routed through a per-stack scheduled reposition so concurrent arrivals in the same tick coalesce into one full-stack pass.
 
@@ -141,10 +195,11 @@ Each pool window pre-loads a single static template page (`TEMPLATE_HTML`) at cr
 
 `native.ts` exports:
 
-- `getDisplays()` — calls `electron.screen.getAllDisplays()` and returns display metadata
+- `getDisplays()` — calls `electron.screen.getAllDisplays()` and returns display metadata for the settings panel; deliberately uncached so it always reflects the monitors plugged in right now (the hot path uses a cached list, invalidated on `display-added` / `display-removed` / `display-metrics-changed`)
 - `showToast(options)` — IPC-callable; acquires a pre-created `BrowserWindow` from the pool (frameless, transparent, always-on-top, `focusable: false`), positions it at exact pixel coordinates computed from the target display's work area (bounds minus the taskbar/reserved regions) plus corner and offsets, updates the pre-loaded template via the preload IPC channel (or `__npUpdate` fallback), and auto-closes after the configured duration
 - `startMainProcessPatch(config)` / `updateMainProcessPatch(config)` / `stopMainProcessPatch()` — manage the prototype patch and keep toast config in sync with renderer settings; `clampToastCaps` runs once at each entry so the hot path can trust the values
-- `setDebug(enabled)` — toggles the diagnostics logger (`logErr`), which forwards scoped error messages to Discord's renderer devtools console when on
+- `noteFriendStatus(messageId, isFriend)` — renderer-to-main push of friend status for the friend-highlight feature; only friends are pushed, since main treats a missing entry as "not a friend"
+- `setDebug(enabled)` — toggles the diagnostics loggers (`logErr` and `logDiag`), which forward scoped messages to Discord's renderer devtools console when on. Hot-path `logDiag` call sites are additionally guarded at the call site, so their message strings are never built while debug is off
 
 **Window position animation:** When a toast is dismissed and remaining toasts reposition, a single shared `setInterval` ticker drives every in-flight window move. Each animation is one entry in a `pendingMoves` map; the ticker iterates the map every 16 ms and removes entries as they reach their target. The ticker auto-stops when the map is empty and restarts on the next move, so there's no idle CPU cost.
 
@@ -163,12 +218,12 @@ A webpack patch on Discord's notification dispatch module sets the `sound` prope
 
 - `index.tsx` — plugin logic, settings, webpack patches, `window.Notification` patch, CSS variable management, settings panel (color picker, debounced IPC, diagnostics toggle)
 - `native.ts` — Electron main-process logic: display enumeration, BrowserWindow toast pool, preload-script generation, `ElectronNotification.prototype.show` interception, `fetchBuffer` via Electron `net`, shared animation ticker, scoped error logger
-- `toastTemplate.ts` — toast presentation layer: `TEMPLATE_HTML`, `PRELOAD_SRC`, Discord SVG fallback, and layout dimension constants
+- `toastTemplate.ts` — toast presentation layer: `TEMPLATE_HTML`, `PRELOAD_SRC`, the Discord fallback and friend-badge SVGs, and layout dimension constants
 - `style.css` — CSS rule that applies the in-app overlay position variables; color picker styling
 - `README.md` — this file
 - `CHANGELOG.md` — version history
 
 ## Planned features
 
-- Custom toast width and opacity settings
+- Custom toast width setting
 - Per-monitor positioning on multi-display setups (in-app overlay)

@@ -17,6 +17,7 @@ import { Button, FluxDispatcher, Forms, React, Select, TextInput } from "@webpac
 import type { DisplayInfo, ToastConfig, ToastOptions } from "./native";
 
 const ChannelStore = findStoreLazy("ChannelStore") as any;
+const RelationshipStore = findStoreLazy("RelationshipStore") as any;
 
 const Native = VencordNative.pluginHelpers.NotificationsPlus as PluginNative<typeof import("./native")>;
 
@@ -90,6 +91,12 @@ function getToastShared() {
         alwaysOnTop: s.toastAlwaysOnTop,
         coalesceWindowMs: s.toastCoalesceWindowMs,
         poolMin: s.toastPoolMin,
+        friendHighlightEnabled: s.friendHighlightEnabled,
+        friendBadge: s.friendBadge,
+        friendAccent: s.friendAccent,
+        friendAccentColor: s.friendAccentColor,
+        friendPrefix: s.friendPrefix,
+        friendPrefixText: s.friendPrefixText,
     };
 }
 
@@ -104,13 +111,14 @@ function getToastConfig(): ToastConfig {
     };
 }
 
-function buildToastOptions(callTitle: string, callBody: string, callIcon: string): ToastOptions {
+function buildToastOptions(callTitle: string, callBody: string, callIcon: string, isFriend = false): ToastOptions {
     const s = settings.store;
     return {
         ...getToastShared(),
         title: s.toastTitleTemplate.replace("{title}", callTitle),
         body: s.toastBodyTemplate.replace("{body}", callBody),
         icon: s.toastIconUrl || callIcon,
+        isFriend,
     };
 }
 
@@ -171,9 +179,30 @@ function channelContextKey(channelName: string, categoryName: string): string {
     return categoryName ? `#${channelName}, ${categoryName}` : `#${channelName}`;
 }
 
-function onMessageCreate(payload: { message?: { channel_id?: string; id?: string; }; }) {
+function onMessageCreate(payload: { message?: { channel_id?: string; id?: string; author?: { id?: string; }; }; }) {
     const msg = payload?.message;
     if (!msg?.channel_id || !msg.id) return;
+
+    // Friend highlight: push this message's friend status to the main process keyed by
+    // message ID, so the native toast path (which only sees a toastXml with no author ID)
+    // can resolve it. Done before the server-channel gate below so DMs — where friends
+    // most often message — are covered too. Gated on the feature being on to avoid IPC
+    // churn when it's disabled. Fire-and-forget: the toast degrades gracefully if it's late.
+    //
+    // Only friends are pushed, never non-friends. Main treats a missing entry as "not a
+    // friend" (see the friendStatusByMessageId.get read in native.ts), so pushing `false`
+    // carried no information while costing a full ipcRenderer.invoke round-trip for EVERY
+    // message visible to the account, whether or not it would ever become a notification.
+    // Skipping them also stops non-friend traffic from evicting real friend entries out of
+    // main's FRIEND_STATUS_MAX-slot LRU before the toast builds, which matters most when
+    // coalescing holds the toast behind a burst.
+    if (settings.store.useCustomNativeToast && settings.store.friendHighlightEnabled) {
+        const authorId = msg.author?.id;
+        if (authorId && RelationshipStore?.isFriend?.(authorId)) {
+            Native.noteFriendStatus(msg.id, true);
+        }
+    }
+
     const channel = ChannelStore?.getChannel?.(msg.channel_id);
     // Only track server text channels (type 0). DMs/threads/voice/etc. either don't
     // appear in this code path's notifications or aren't reachable via the title parse.
@@ -336,6 +365,11 @@ function SettingsPanel() {
             Native.showToast(buildToastOptions("NotificationsPlus", "DM test — looking good?", ""));
             // Fire a regular server toast (channel context → isDMTitle = false)
             Native.showToast(buildToastOptions("NotificationsPlus (#general, Testing)", "Server notification test — looking good?", ""));
+            // Fire a friend DM toast so the friend-highlight styling can be previewed
+            // without waiting for a real friend to message.
+            if (s.friendHighlightEnabled) {
+                Native.showToast(buildToastOptions("BestFriend", "Friend highlight test — see the difference?", "", true));
+            }
         } else {
             showNotification({
                 title: "NotificationsPlus",
@@ -568,6 +602,54 @@ function SettingsPanel() {
                         />
                     </Cell>
                 </Grid>
+
+                <SubHeader>Friend Highlight</SubHeader>
+                <div className="np-toggle-row">
+                    <Switch
+                        checked={s.friendHighlightEnabled}
+                        onChange={v => set("friendHighlightEnabled", v, updateToast)}
+                    />
+                    <Forms.FormText>Visually identify messages from people on your friends list</Forms.FormText>
+                </div>
+                {s.friendHighlightEnabled && (
+                    <Grid>
+                        <Cell label="Star badge by the name">
+                            <Switch
+                                checked={s.friendBadge}
+                                onChange={v => set("friendBadge", v, updateToast)}
+                            />
+                        </Cell>
+                        <Cell label="Recolor toast accent">
+                            <Switch
+                                checked={s.friendAccent}
+                                onChange={v => set("friendAccent", v, updateToast)}
+                            />
+                        </Cell>
+                        {s.friendAccent && (
+                            <Cell label="Friend accent color">
+                                <ColorPicker
+                                    value={s.friendAccentColor}
+                                    fallback="#f0b232"
+                                    onChange={v => set("friendAccentColor", v, updateToast)}
+                                />
+                            </Cell>
+                        )}
+                        <Cell label="Prefix the name with a label">
+                            <Switch
+                                checked={s.friendPrefix}
+                                onChange={v => set("friendPrefix", v, updateToast)}
+                            />
+                        </Cell>
+                        {s.friendPrefix && (
+                            <Cell label="Name prefix text">
+                                <TextInput
+                                    value={s.friendPrefixText}
+                                    onChange={v => set("friendPrefixText", v, updateToast)}
+                                />
+                            </Cell>
+                        )}
+                    </Grid>
+                )}
 
                 {displays.length > 0 && (
                     <div className="np-monitor-list">
@@ -838,6 +920,42 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         default: false,
     },
+    friendHighlightEnabled: {
+        hidden: true,
+        description: "Visually identify toasts from people on your friends list",
+        type: OptionType.BOOLEAN,
+        default: true,
+    },
+    friendBadge: {
+        hidden: true,
+        description: "Show a star badge beside a friend's name",
+        type: OptionType.BOOLEAN,
+        default: true,
+    },
+    friendAccent: {
+        hidden: true,
+        description: "Recolor the toast accent for friend messages",
+        type: OptionType.BOOLEAN,
+        default: true,
+    },
+    friendAccentColor: {
+        hidden: true,
+        description: "Accent color used for friend messages when accent recolor is on",
+        type: OptionType.STRING,
+        default: "#f0b232",
+    },
+    friendPrefix: {
+        hidden: true,
+        description: "Prefix a friend's name with a label",
+        type: OptionType.BOOLEAN,
+        default: false,
+    },
+    friendPrefixText: {
+        hidden: true,
+        description: "Text prefixed to a friend's name when name-prefix is on",
+        type: OptionType.STRING,
+        default: "★ ",
+    },
     _ui: {
         type: OptionType.COMPONENT,
         description: "",
@@ -858,7 +976,12 @@ export default definePlugin({
             // Same module that onePingPerDM patches — Discord's notification dispatch function.
             // Nulling sound when suppressNotificationSound is enabled mutes the ping audio
             // without affecting the visual notification path.
-            find: ".getDesktopType()===",
+            //
+            // The find string was ".getDesktopType()===" until Discord's 2026-07 notification
+            // module change broke it (patch silently stopped applying, so the ping kept
+            // playing while the toggle still read as enabled). Upstream Vencord moved
+            // onePingPerDM to the "NotificationStore" anchor in commit a3250ea; mirror that.
+            find: '"NotificationStore"',
             replacement: {
                 match: /sound:(\i\?\i:void 0,volume:\i,onClick)/,
                 replace: "sound:$self.settings.store.suppressNotificationSound?void 0:$1",

@@ -69,9 +69,22 @@ export interface ToastOptions {
     // [1, POOL_MIN_MAX] in clampToastCaps. Mostly affects users with tight caps
     // (small stackSize+dmGroupThreshold) — for default caps the formula dominates.
     poolMin: number;
+    // Friend highlight display config (carried on every toast via getToastShared).
+    // friendHighlightEnabled is the master switch; the three style flags are independent
+    // so the user can mix badge / accent-swap / name-prefix however they like.
+    friendHighlightEnabled: boolean;
+    friendBadge: boolean;
+    friendAccent: boolean;
+    friendAccentColor: string;
+    friendPrefix: boolean;
+    friendPrefixText: string;
+    // Runtime, per-message: true when the message author is on the user's friends list.
+    // Determined renderer-side (RelationshipStore) and pushed to main via noteFriendStatus;
+    // resolved here from the message ID. NOT part of ToastConfig (it's per-toast, not config).
+    isFriend?: boolean;
 }
 
-export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon"> & {
+export type ToastConfig = Omit<ToastOptions, "title" | "body" | "icon" | "isFriend"> & {
     titleTemplate: string;
     bodyTemplate: string;
     redirectOnClick: boolean;
@@ -255,21 +268,29 @@ const TEMPLATE_B64 = Buffer.from(TEMPLATE_HTML).toString("base64");
 interface UpdateData {
     ar: number; ag: number; ab: number;
     ts: number; cs: number; bs: number; bmax: number;
-    sf: string; font: string; fc: string;
+    sf: string; font: string;
     grad: boolean; bgD: string; bgL: string; bhD: string; bhL: string;
     icon: string; title: string; isDM: boolean; cat: string; ch: string;
     bhtml: string; lnk: string | null;
     barMs: number; ent: string; clk: boolean;
+    fbadge: boolean;
 }
 
 function buildUpdateData(
     options: ToastOptions,
     effectiveDuration: number,
     clickable: boolean,
-    isRight: boolean,
-    fontCss: string
+    isRight: boolean
 ): UpdateData {
     const { body, icon, font, titleSize, channelSize, bodySize, entrance, gradientBg, bgOpacity, dmAccent, serverAccent } = options;
+
+    // Friend highlight: a message is "friend-highlighted" only when the master switch is
+    // on AND this message's author resolved to a friend. The three style flags then act
+    // independently — accent-swap recolors the toast, badge shows a star, prefix tags the name.
+    const friendOn = !!options.friendHighlightEnabled && !!options.isFriend;
+    const useFriendAccent = friendOn && options.friendAccent;
+    const showFriendBadge = friendOn && options.friendBadge;
+    const useFriendPrefix = friendOn && options.friendPrefix;
 
     // Discord notification title format: "Username (#channel-name, Category)"
     // Category names may contain nested parentheses (e.g. "Community (Non-GTA)") — use paren balancing.
@@ -296,8 +317,12 @@ function buildUpdateData(
         }
     }
     const isDM = !channelDisplay && !categoryDisplay;
-    const accent = isDM ? dmAccent : serverAccent;
+    // Friend accent-swap (when enabled) overrides the normal DM/server accent so the
+    // whole toast — border, glow, channel line, and badge — recolors to the friend color.
+    const accent = useFriendAccent ? options.friendAccentColor : (isDM ? dmAccent : serverAccent);
     const [ar, ag, ab] = hexToRgb(accent);
+
+    if (useFriendPrefix) displayName = options.friendPrefixText + displayName;
 
     const firstUrlMatch = body.match(/https?:\/\/[^\s]+/);
     const firstUrl = firstUrlMatch ? firstUrlMatch[0] : null;
@@ -315,7 +340,7 @@ function buildUpdateData(
         ts: titleSize, cs: channelSize, bs: bodySize,
         bmax: Math.ceil(bodySize * 1.4 * 3),
         sf: isRight ? "calc(100% + 20px)" : "calc(-100% - 20px)",
-        font, fc: fontCss,
+        font,
         grad: gradientBg, bgD, bgL, bhD, bhL,
         icon: icon || "",
         title: displayName, isDM,
@@ -323,6 +348,7 @@ function buildUpdateData(
         bhtml: formatBody(body),
         lnk, barMs: effectiveDuration * 1000,
         ent: entrance, clk: clickable,
+        fbadge: showFriendBadge,
     };
 }
 
@@ -331,6 +357,33 @@ function buildUpdateData(
 // Stored when startMainProcessPatch is called so we can run executeJavaScript
 // on the Discord renderer for jump-to-message after a toast click.
 let senderWebContents: WebContents | null = null;
+
+// ── Friend status (renderer → main push) ─────────────────────────────────────
+//
+// The main process only sees a toastXml blob with no author user ID, so it can't tell
+// whether a message is from a friend. The renderer can (RelationshipStore.isFriend), and
+// it already runs a MESSAGE_CREATE subscription. So for every message it pushes
+// noteFriendStatus(messageId, isFriend) here, and processNotification resolves the flag
+// from the message ID it extracts via extractNavData.
+//
+// Keyed by messageId alone — Discord snowflake IDs are globally unique, so no channel
+// component is needed. Bounded LRU so a long session doesn't accumulate unboundedly.
+// Best-effort: if the note hasn't arrived by the time the toast builds (rare — the
+// renderer's MESSAGE_CREATE handler runs before it asks main to show the notification,
+// and same-renderer IPC is ordered), the toast simply shows with no highlight.
+const FRIEND_STATUS_MAX = 200;
+const friendStatusByMessageId = new Map<string, boolean>();
+
+export function noteFriendStatus(_: IpcMainInvokeEvent, messageId: string, isFriend: boolean): void {
+    if (!messageId) return;
+    // True LRU: delete + re-set so the newest sits at the tail of insertion order.
+    if (friendStatusByMessageId.has(messageId)) friendStatusByMessageId.delete(messageId);
+    friendStatusByMessageId.set(messageId, !!isFriend);
+    if (friendStatusByMessageId.size > FRIEND_STATUS_MAX) {
+        const oldest = friendStatusByMessageId.keys().next().value;
+        if (oldest !== undefined) friendStatusByMessageId.delete(oldest);
+    }
+}
 
 // Extracts the guild/channel/message IDs Discord encodes in the toastXml
 // <toast launch="..."> attribute (Windows). Tries both the discord:// URL form
@@ -384,7 +437,43 @@ function deriveFallbackCoalesceKey(title: string): string | null {
     return `srv:${raw.slice(openIdx + 1, closeIdx)}`;
 }
 
+// -- Display cache ------------------------------------------------------------
+//
+// screen.getAllDisplays() re-enumerates monitors on every call, and showToastInternal
+// hits it on every toast (plus once more on the burst-skip path). The list only
+// changes when a monitor is added, removed, or reconfigured - and Electron's screen
+// module reports all three - so cache it and invalidate on those events.
+//
+// display-metrics-changed is the one that matters most here: it fires on taskbar,
+// DPI and resolution changes, which is exactly what moves `workArea` - the value
+// toast positioning is derived from.
+let displayCache: Electron.Display[] | null = null;
+let displayListenersBound = false;
+
+function invalidateDisplayCache(): void {
+    displayCache = null;
+}
+
+function bindDisplayListeners(): void {
+    if (displayListenersBound) return;
+    displayListenersBound = true;
+    screen.on("display-added", invalidateDisplayCache);
+    screen.on("display-removed", invalidateDisplayCache);
+    screen.on("display-metrics-changed", invalidateDisplayCache);
+}
+
+// Hot-path accessor. Binds the listeners lazily on first use so it stays correct no
+// matter which entry point runs first - startMainProcessPatch, or a direct showToast
+// from the settings panel's test button.
+function getDisplaysCached(): Electron.Display[] {
+    bindDisplayListeners();
+    if (!displayCache) displayCache = screen.getAllDisplays();
+    return displayCache;
+}
+
 export function getDisplays(_: IpcMainInvokeEvent): DisplayInfo[] {
+    // Deliberately uncached: this serves the settings panel, runs rarely, and should
+    // always reflect whatever monitors are plugged in right now.
     const primary = screen.getPrimaryDisplay();
     return screen.getAllDisplays().map((d, i) => ({
         index: i,
@@ -508,11 +597,11 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
             if (!e.isGroup && e.addedAt < oldestAddedAt) oldestAddedAt = e.addedAt;
         }
         if (Date.now() - oldestAddedAt < BURST_THRESHOLD_MS) {
-            logDiag("burst-skip", `key=${toastKey} isDM=${isDM} oldestAgeMs=${Math.round(Date.now() - oldestAddedAt)} stackFull=${fullCountAtArrival}/${maxStack}`);
+            if (debugEnabled) logDiag("burst-skip", `key=${toastKey} isDM=${isDM} oldestAgeMs=${Math.round(Date.now() - oldestAddedAt)} stackFull=${fullCountAtArrival}/${maxStack}`);
             if (isDM) {
                 const newCount = (evictedCounts.get(toastKey) ?? 0) + 1;
                 evictedCounts.set(toastKey, newCount);
-                const display = screen.getAllDisplays()[displayIndex] ?? screen.getPrimaryDisplay();
+                const display = getDisplaysCached()[displayIndex] ?? screen.getPrimaryDisplay();
                 // workArea (not bounds) excludes the taskbar/reserved areas, so toasts in
                 // bottom corners don't render under the Windows taskbar.
                 const dBounds = display.workArea;
@@ -542,7 +631,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         stack.splice(oldestIdx, 1);
         if (!oldest.win.isDestroyed()) oldest.win.close();
         fullCount--;
-        logDiag("evict", `key=${toastKey} isDM=${isDM} ageMs=${Math.round(Date.now() - oldest.addedAt)}`);
+        if (debugEnabled) logDiag("evict", `key=${toastKey} isDM=${isDM} ageMs=${Math.round(Date.now() - oldest.addedAt)}`);
 
         if (isDM) {
             const newCount = (evictedCounts.get(toastKey) ?? 0) + 1;
@@ -550,7 +639,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         }
     }
 
-    const displays = screen.getAllDisplays();
+    const displays = getDisplaysCached();
     const display = displays[displayIndex] ?? screen.getPrimaryDisplay();
     // Use workArea, not bounds, so bottom-corner toasts sit above the taskbar
     // instead of being partially hidden behind it.
@@ -604,11 +693,18 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         scheduleReposition(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
     });
 
-    const fontCss = fontCache.get(options.font) ?? "";
+    // Font CSS is pushed per-window (see pushFontIfStale), never per-toast. This is a
+    // no-op in steady state - it only does work when this window was warmed before the
+    // font finished downloading, or the user switched fonts since it was warmed.
+    pushFontIfStale(win, options.font);
     // Lazy-fire font fetch for next time; ensureFontCached itself already logs errors.
-    if (!fontCss && GOOGLE_FONTS[options.font]) ensureFontCached(options.font).catch(() => {});
+    // refreshPoolFonts then pushes the freshly-cached CSS to the windows already sitting
+    // warm in the pool, so the NEXT toast renders in the right font without paying for it.
+    if (!fontCache.has(options.font) && GOOGLE_FONTS[options.font]) {
+        ensureFontCached(options.font).then(refreshPoolFonts).catch(() => {});
+    }
 
-    const updateData = buildUpdateData({ ...options, icon: resolvedIcon }, effectiveDuration, !!onClicked, isRight, fontCss);
+    const updateData = buildUpdateData({ ...options, icon: resolvedIcon }, effectiveDuration, !!onClicked, isRight);
 
     // sendToastUpdate combines content update and height measurement into a single
     // round-trip. Uses preload IPC when available (faster, structured clone), falls
@@ -671,11 +767,18 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     }
 
     const tEnd = performance.now();
-    logDiag("toast.show",
-        `key=${toastKey} isDM=${isDM} acquire=${(tAcquire - t0).toFixed(1)}ms ` +
-        `update=${(tUpdate - tAcquire).toFixed(1)}ms ` +
-        `tail=${(tEnd - tUpdate).toFixed(1)}ms total=${(tEnd - t0).toFixed(1)}ms ` +
-        `measuredH=${measuredH}`);
+    // Guarded at the call site, not just inside logDiag: the template below runs four
+    // toFixed() calls and concatenates four strings, and all of that ran on every toast
+    // even with diagnostics off. The performance.now() marks are deliberately left
+    // unconditional - they cost nanoseconds, and making them conditional would emit one
+    // garbage timing line for whichever toast is in flight when the user flips npDebug.
+    if (debugEnabled) {
+        logDiag("toast.show",
+            `key=${toastKey} isDM=${isDM} acquire=${(tAcquire - t0).toFixed(1)}ms ` +
+            `update=${(tUpdate - tAcquire).toFixed(1)}ms ` +
+            `tail=${(tEnd - tUpdate).toFixed(1)}ms total=${(tEnd - t0).toFixed(1)}ms ` +
+            `measuredH=${measuredH}`);
+    }
 
     return win.id;
 }
@@ -738,7 +841,29 @@ function extractImageFromToastXml(xml: string): string {
 // A sandboxed BrowserWindow can't load a bare file path from a data: page,
 // so we read it immediately and return a base64 data URI instead.
 const ICON_CACHE_MAX = 50;
-const iconCache = new Map<string, string>();
+
+// `size` is the byte length the data URI was built from. Recording it is free -
+// readFile already handed us the buffer - and it powers the staleness canary below.
+interface IconCacheEntry { dataUrl: string; size: number; }
+const iconCache = new Map<string, IconCacheEntry>();
+
+// Instrumentation for a question the code alone cannot answer: does Discord reuse
+// avatar temp paths across notifications? There are three possible worlds and they
+// call for opposite fixes -
+//   stable per-user path          -> hits, the cache is earning its keep
+//   unique path per notification  -> hit rate ~0, the 50 entries are dead weight
+//   one path reused for DIFFERENT avatars -> hits, but we serve a stale face
+// The third is a correctness bug rather than a perf one, so the HIT path stats the
+// file and compares its byte size against what we cached; a mismatch means the file
+// changed underneath us. All of this - including the extra stat syscall - is gated
+// on npDebug, so default users pay nothing for it.
+let iconHits = 0;
+let iconMisses = 0;
+
+function iconRate(): string {
+    const total = iconHits + iconMisses;
+    return `${iconHits}/${total} (${total ? Math.round(iconHits * 100 / total) : 0}%)`;
+}
 
 async function iconPathToDataUrl(src: string): Promise<string> {
     if (!src) return "";
@@ -749,7 +874,19 @@ async function iconPathToDataUrl(src: string): Promise<string> {
     if (cached !== undefined) {
         iconCache.delete(src);
         iconCache.set(src, cached);
-        return cached;
+        if (debugEnabled) {
+            iconHits++;
+            let note = "";
+            try {
+                const { stat } = require("fs/promises") as typeof import("fs/promises");
+                const st = await stat(src);
+                if (st.size !== cached.size) note = ` STALE cachedBytes=${cached.size} onDiskBytes=${st.size}`;
+            } catch {
+                note = " (no longer on disk)";
+            }
+            logDiag("icon-cache", `HIT ${iconRate()} entries=${iconCache.size}/${ICON_CACHE_MAX}${note} path=${src}`);
+        }
+        return cached.dataUrl;
     }
     try {
         const { readFile } = require("fs/promises") as typeof import("fs/promises");
@@ -758,7 +895,11 @@ async function iconPathToDataUrl(src: string): Promise<string> {
         const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
         const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
         if (iconCache.size >= ICON_CACHE_MAX) iconCache.delete(iconCache.keys().next().value!);
-        iconCache.set(src, dataUrl);
+        iconCache.set(src, { dataUrl, size: buf.length });
+        if (debugEnabled) {
+            iconMisses++;
+            logDiag("icon-cache", `MISS ${iconRate()} entries=${iconCache.size}/${ICON_CACHE_MAX} bytes=${buf.length} path=${src}`);
+        }
         return dataUrl;
     } catch {
         return "";
@@ -834,6 +975,63 @@ function targetPoolSize(): number {
 // ensuring executeJavaScript can run immediately without page-ready races.
 const poolReady = new WeakMap<BrowserWindow, Promise<void>>();
 
+// -- Per-window font injection -----------------------------------------------
+//
+// The cached Google Font CSS inlines every weight and unicode subset as base64 -
+// for Nunito (the default) that is 20 woff2 files, ~716 KB of string. It used to
+// ride along inside every UpdateData, so each toast structured-cloned ~716 KB to
+// the renderer, which then had to reparse the whole stylesheet before the height
+// measurement that gates win.show() could come back.
+//
+// It is now pushed once per window at pool-warm time instead, where nothing is
+// waiting on it. The per-toast payload drops to ~2 KB, and by the time a window is
+// claimed its webfont has usually finished decoding, which also makes the height
+// measurement more accurate than it was before.
+//
+// Stamped by font name + CSS length so a window warmed BEFORE the network fetch
+// resolved (fontCss "") is correctly re-pushed once the real CSS lands.
+const appliedFont = new WeakMap<BrowserWindow, string>();
+
+function fontStamp(fontName: string, fontCss: string): string {
+    return `${fontName}:${fontCss.length}`;
+}
+
+// Push fontName's cached CSS to win unless it already has exactly that. Cheap enough
+// for the hot path: a stamp comparison and an early return in steady state.
+// Deliberately not awaited - IPC to a given renderer is ordered, so an np:font sent
+// before an np:update is applied before it.
+function pushFontIfStale(win: BrowserWindow, fontName: string): void {
+    if (win.isDestroyed()) return;
+    const fontCss = fontCache.get(fontName) ?? "";
+    const stamp = fontStamp(fontName, fontCss);
+    if (appliedFont.get(win) === stamp) return;
+    try {
+        if (preloadPath) {
+            win.webContents.send("np:font", fontCss);
+        } else {
+            win.webContents.executeJavaScript(
+                `window.__npFont&&window.__npFont(${JSON.stringify(fontCss)})`
+            ).catch(err => logErr("font-push:exec", err));
+        }
+        // Stamped only after the send actually went out, so a throw leaves the window
+        // unstamped and the next toast retries rather than silently keeping no font.
+        appliedFont.set(win, stamp);
+    } catch (err) {
+        logErr("font-push", err);
+    }
+}
+
+// Re-push the configured font to every idle pool window. Called once ensureFontCached
+// resolves, since any window warmed before the download finished is holding "".
+function refreshPoolFonts(): void {
+    const fontName = mainToastConfig?.font ?? "";
+    for (const w of windowPool) {
+        const ready = poolReady.get(w);
+        if (ready) ready.then(() => pushFontIfStale(w, fontName)).catch(() => {});
+        else pushFontIfStale(w, fontName);
+    }
+}
+
 function createPoolWindow(): BrowserWindow {
     const preload = ensurePreload();
     const webPreferences: Electron.WebPreferences = {
@@ -855,7 +1053,11 @@ function createPoolWindow(): BrowserWindow {
         focusable: false,
         webPreferences,
     });
-    poolReady.set(w, w.loadURL(`data:text/html;base64,${TEMPLATE_B64}`));
+    const ready = w.loadURL(`data:text/html;base64,${TEMPLATE_B64}`);
+    poolReady.set(w, ready);
+    // Inject the font as soon as the shell is up, so the CSSOM reparse happens here
+    // in the background instead of on the show path of whichever toast claims it.
+    ready.then(() => pushFontIfStale(w, mainToastConfig?.font ?? "")).catch(() => {});
     return w;
 }
 
@@ -893,7 +1095,7 @@ async function acquireWindow(): Promise<BrowserWindow> {
     // Pay the cold create+loadURL cost on the hot path. If this fires often in
     // diagnostics, the user may want to raise `Pool minimum size` so the floor exceeds
     // their typical burst length.
-    logDiag("pool", `MISS — cold-create (target=${targetPoolSize()})`);
+    if (debugEnabled) logDiag("pool", `MISS — cold-create (target=${targetPoolSize()})`);
     warmPool();
     const w = createPoolWindow();
     await poolReady.get(w);
@@ -1085,6 +1287,7 @@ interface CoalesceBuffer {
     rawBody: string;
     avatarPath: string;
     navData: { channelId: string; messageId: string; } | null;
+    isFriend: boolean;
     // Wall-clock of the first arrival in this buffer — used by diagnostics to log
     // the ACTUAL flush latency, which may exceed coalesceWindowMs under event-loop
     // pressure (the setTimeout is a floor, not a ceiling).
@@ -1098,7 +1301,7 @@ function flushCoalesceBuffer(channelId: string): void {
     coalesceBuffers.delete(channelId);
     const cfg = mainToastConfig;
     if (!cfg) return;
-    logDiag("coalesce-flush", `channel=${channelId} count=${buf.count} latencyMs=${Date.now() - buf.firstAddedAt}`);
+    if (debugEnabled) logDiag("coalesce-flush", `channel=${channelId} count=${buf.count} latencyMs=${Date.now() - buf.firstAddedAt}`);
     // Append "(N new)" to the raw title BEFORE template substitution so it appears
     // ahead of the (#channel, Category) context that buildUpdateData parses out. The
     // title parser in buildUpdateData looks for `\s+\(#` to find the context group,
@@ -1106,7 +1309,7 @@ function flushCoalesceBuffer(channelId: string): void {
     // "Alice (3 new)" / channel=#general / category=Chat. For DMs ("Alice"), the
     // result is just "Alice (3 new)" / "Direct Message".
     const titleWithCount = buf.count > 1 ? `${buf.rawTitle} (${buf.count} new)` : buf.rawTitle;
-    emitToast(cfg, buf.notif, titleWithCount, buf.rawBody, buf.avatarPath, buf.navData);
+    emitToast(cfg, buf.notif, titleWithCount, buf.rawBody, buf.avatarPath, buf.navData, buf.isFriend);
 }
 
 function flushAllCoalesceBuffers(): void {
@@ -1125,7 +1328,8 @@ function emitToast(
     rawTitle: string,
     rawBody: string,
     avatarPath: string,
-    navData: { channelId: string; messageId: string; } | null
+    navData: { channelId: string; messageId: string; } | null,
+    isFriend: boolean
 ): void {
     const onClicked = cfg.redirectOnClick ? () => {
         // Emit click so Discord focuses its window and navigates to the channel.
@@ -1170,6 +1374,7 @@ function emitToast(
         // If user has a custom iconUrl override, no path-read is needed. Otherwise pass
         // the raw path so showToastInternal resolves it only on the surviving path.
         iconPath: cfg.iconUrl ? "" : avatarPath,
+        isFriend,
     }, onClicked);
 }
 
@@ -1193,10 +1398,15 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
         avatarPath = extractImageFromToastXml(xml);
     }
 
-    // Nav data is needed by either redirectOnClick (jump-to-message) or coalescing
-    // (channelId as buffer key). Skip the regex work when neither is on.
-    const needsNavData = cfg.redirectOnClick || cfg.coalesceWindowMs > 0;
+    // Nav data is needed by redirectOnClick (jump-to-message), coalescing (channelId as
+    // buffer key), or friend highlight (messageId to resolve friend status). Skip the
+    // regex work when none are on.
+    const needsNavData = cfg.redirectOnClick || cfg.coalesceWindowMs > 0 || cfg.friendHighlightEnabled;
     const navData = needsNavData ? extractNavData(notif as any) : null;
+
+    // Resolve friend status from the message ID the renderer pushed via noteFriendStatus.
+    // Absent entry → not highlighted (graceful: feature simply doesn't engage for this toast).
+    const isFriend = !!(cfg.friendHighlightEnabled && navData && friendStatusByMessageId.get(navData.messageId));
 
     // Pick a coalesce key: prefer the real channelId (precise, survives renames);
     // fall back to a title-derived key when navData extraction fails. The fallback
@@ -1235,6 +1445,9 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
             existing.rawBody = body;
             existing.avatarPath = avatarPath;
             existing.navData = navData;
+            // Latest message wins for the highlight too — if the newest arrival in the
+            // burst is from a friend, the merged toast is highlighted.
+            existing.isFriend = isFriend;
             return;
         }
         coalesceBuffers.set(key, {
@@ -1245,12 +1458,13 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
             rawBody: body,
             avatarPath,
             navData,
+            isFriend,
             firstAddedAt: Date.now(),
         });
         return;
     }
 
-    emitToast(cfg, notif, title, body, avatarPath, navData);
+    emitToast(cfg, notif, title, body, avatarPath, navData, isFriend);
 }
 
 let mainOriginalShow: (() => void) | null = null;
@@ -1260,7 +1474,7 @@ export function startMainProcessPatch(e: IpcMainInvokeEvent, config: ToastConfig
     senderWebContents = e.sender;
     clampToastCaps(config);
     mainToastConfig = config;
-    ensureFontCached(config.font).catch(() => {});
+    ensureFontCached(config.font).then(refreshPoolFonts).catch(() => {});
     // Defer pool warm-up so this IPC returns immediately. acquireWindow handles a cold
     // pool by creating on demand — first toast pays a small one-time cost if it fires
     // before setImmediate runs (rare in practice).
@@ -1295,7 +1509,9 @@ export function updateMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfi
     if (wasCoalescing && config.coalesceWindowMs === 0) flushAllCoalesceBuffers();
     // Settings change may raise stack/group caps — top up the pool if needed.
     setImmediate(() => warmPool());
-    ensureFontCached(config.font).catch(() => {});
+    // Font may have changed - refreshPoolFonts re-pushes to already-warm pool windows
+    // so they aren't left rendering the previous font.
+    ensureFontCached(config.font).then(refreshPoolFonts).catch(() => {});
 }
 
 export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
@@ -1311,12 +1527,22 @@ export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
     evictedCounts.clear();
     fontCache.clear();
     iconCache.clear();
+    iconHits = 0;
+    iconMisses = 0;
     // Drop any pending coalesce buffers — plugin is off, no toasts should emit.
     for (const buf of coalesceBuffers.values()) clearTimeout(buf.timer);
     coalesceBuffers.clear();
+    friendStatusByMessageId.clear();
     for (const timer of pendingReposition.values()) clearTimeout(timer);
     pendingReposition.clear();
     pendingMoves.clear();
     if (animTicker !== null) { clearInterval(animTicker); animTicker = null; }
+    if (displayListenersBound) {
+        screen.removeListener("display-added", invalidateDisplayCache);
+        screen.removeListener("display-removed", invalidateDisplayCache);
+        screen.removeListener("display-metrics-changed", invalidateDisplayCache);
+        displayListenersBound = false;
+    }
+    displayCache = null;
     drainPool();
 }

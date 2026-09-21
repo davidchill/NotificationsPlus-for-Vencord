@@ -16,6 +16,11 @@ export const GROUP_H = 52;
 
 export const DISCORD_SVG = `<svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>`;
 
+// Small filled star shown beside the sender name when the message is from a friend
+// (and the friend-badge style is enabled). fill="currentColor" so it inherits the
+// toast accent — which is the friend accent color when accent-swap is also on.
+export const FRIEND_SVG = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.2l2.95 6.36 6.85.62-5.17 4.55 1.55 6.7L12 17.5l-6.13 3.13 1.55-6.7L2.25 9.18l6.85-.62z"/></svg>`;
+
 // Static template pre-loaded into every pool window. Dynamic values are injected via
 // either the preload script (preferred — see PRELOAD_SRC below) or the inline __npUpdate
 // fallback (used if preload write to temp fails at startup).
@@ -54,7 +59,11 @@ body{-webkit-font-smoothing:antialiased}
 .icon-wrap{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:var(--ishadow)}
 .icon{width:44px;height:44px;object-fit:cover;border-radius:50%}
 .content{flex:1;min-width:0;padding-top:2px}
-.title{font-size:var(--ts);font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.title-row{display:flex;align-items:center;gap:5px;margin-bottom:2px;min-width:0}
+.title{font-size:var(--ts);font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fbadge{flex-shrink:0;display:none;align-items:center;justify-content:center;color:var(--accent);filter:drop-shadow(0 0 4px rgba(var(--ar),var(--ag),var(--ab),.5))}
+.fbadge.show{display:inline-flex}
+.fbadge svg{width:calc(var(--ts) * 0.95);height:calc(var(--ts) * 0.95)}
 .category{font-size:var(--cs);font-weight:500;color:var(--cat);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:1px}
 .channel{font-size:var(--cs);font-weight:500;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
 .body{font-size:var(--bs);line-height:1.4;color:var(--text);overflow-wrap:break-word;word-break:break-word;max-height:var(--bmax);overflow:hidden}
@@ -65,16 +74,19 @@ body{-webkit-font-smoothing:antialiased}
 .lbtn{position:absolute;bottom:14px;right:12px;font-size:10px;font-weight:600;color:var(--accent);background:transparent;border:1px solid var(--accent);border-radius:4px;padding:2px 7px;text-decoration:none;cursor:pointer;opacity:.8;letter-spacing:.02em;transition:opacity .15s,background .15s;display:none}
 .lbtn.show{display:block}.lbtn:hover{opacity:1;background:var(--hbg)}
 </style></head><body>
-<div class="toast" id="t"><div class="icon-wrap" id="iw"></div><div class="content"><div class="title" id="ttl"></div><div class="channel" id="dml" style="display:none">Direct Message</div><div class="category" id="cat" style="display:none"></div><div class="channel" id="ch" style="display:none"></div><div class="body" id="bd"></div></div><a class="lbtn" id="lnk" onclick="event.stopPropagation()">Open Link &#8599;</a><div class="bar" id="bar"></div></div>
+<div class="toast" id="t"><div class="icon-wrap" id="iw"></div><div class="content"><div class="title-row"><span class="fbadge" id="fb"></span><span class="title" id="ttl"></span></div><div class="channel" id="dml" style="display:none">Direct Message</div><div class="category" id="cat" style="display:none"></div><div class="channel" id="ch" style="display:none"></div><div class="body" id="bd"></div></div><a class="lbtn" id="lnk" onclick="event.stopPropagation()">Open Link &#8599;</a><div class="bar" id="bar"></div></div>
 <script>
 var SVG=${JSON.stringify(DISCORD_SVG)};
+var FSVG=${JSON.stringify(FRIEND_SVG)};
+// Font CSS is pushed once per window via __npFont (the preload-less fallback path
+// for native.ts's pushFontIfStale) rather than riding along on every update.
+window.__npFont=function(css){var fs=document.getElementById('fs');if(fs)fs.textContent=css||'';};
 window.__npUpdate=function(d){
   var R=document.documentElement.style;
   R.setProperty('--ar',d.ar);R.setProperty('--ag',d.ag);R.setProperty('--ab',d.ab);
   R.setProperty('--ts',d.ts+'px');R.setProperty('--cs',d.cs+'px');R.setProperty('--bs',d.bs+'px');
   R.setProperty('--bmax',d.bmax+'px');R.setProperty('--sf',d.sf);R.setProperty('--bdur',d.barMs+'ms');
   document.body.style.fontFamily='"'+d.font+'","Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif';
-  document.getElementById('fs').textContent=d.fc;
   var t=document.getElementById('t');
   var lt=window.matchMedia('(prefers-color-scheme:light)').matches;
   if(d.grad){
@@ -94,6 +106,8 @@ window.__npUpdate=function(d){
     iw.innerHTML='';iw.appendChild(img);
   }else{iw.innerHTML=SVG;}
   document.getElementById('ttl').textContent=d.title;
+  var fb=document.getElementById('fb');
+  if(d.fbadge){fb.innerHTML=FSVG;fb.className='fbadge show';}else{fb.className='fbadge';fb.innerHTML='';}
   var dml=document.getElementById('dml');dml.style.display=d.isDM?'':'none';
   var cat=document.getElementById('cat');cat.textContent=d.cat;cat.style.display=d.cat?'':'none';
   var ch=document.getElementById('ch');ch.textContent=d.ch;ch.style.display=d.ch?'':'none';
@@ -125,6 +139,7 @@ window.__npUpdate=function(d){
 export const PRELOAD_SRC = `"use strict";
 const { ipcRenderer } = require("electron");
 const SVG = ${JSON.stringify(DISCORD_SVG)};
+const FSVG = ${JSON.stringify(FRIEND_SVG)};
 
 function applyUpdate(d) {
   const R = document.documentElement.style;
@@ -138,7 +153,6 @@ function applyUpdate(d) {
   R.setProperty("--sf", d.sf);
   R.setProperty("--bdur", d.barMs + "ms");
   document.body.style.fontFamily = '"' + d.font + '","Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif';
-  document.getElementById("fs").textContent = d.fc;
   const t = document.getElementById("t");
   const lt = window.matchMedia("(prefers-color-scheme:light)").matches;
   if (d.grad) {
@@ -166,6 +180,9 @@ function applyUpdate(d) {
     iw.innerHTML = SVG;
   }
   document.getElementById("ttl").textContent = d.title;
+  const fb = document.getElementById("fb");
+  if (d.fbadge) { fb.innerHTML = FSVG; fb.className = "fbadge show"; }
+  else { fb.className = "fbadge"; fb.innerHTML = ""; }
   const dml = document.getElementById("dml"); dml.style.display = d.isDM ? "" : "none";
   const cat = document.getElementById("cat"); cat.textContent = d.cat; cat.style.display = d.cat ? "" : "none";
   const ch = document.getElementById("ch"); ch.textContent = d.ch; ch.style.display = d.ch ? "" : "none";
@@ -194,6 +211,14 @@ function applyUpdate(d) {
   return document.documentElement.scrollHeight;
 }
 
+// Applied once per window on np:font, not on every np:update. The CSS inlines every
+// weight and unicode subset as base64 (~716 KB for Nunito), and assigning it to the
+// style element forces a full CSSOM reparse - far too heavy to repeat per toast.
+function applyFont(css) {
+  const fs = document.getElementById("fs");
+  if (fs) fs.textContent = css || "";
+}
+
 function applyCloseAnim() {
   const t = document.querySelector(".toast");
   if (t) t.classList.add("timeout-exit");
@@ -205,6 +230,7 @@ function register() {
     try { h = applyUpdate(d); } catch (e) { /* swallow */ }
     if (d && d._reply) { try { ipcRenderer.send(d._reply, h); } catch (e) {} }
   });
+  ipcRenderer.on("np:font", function (_e, css) { try { applyFont(css); } catch (e) {} });
   ipcRenderer.on("np:close-animate", function () { try { applyCloseAnim(); } catch (e) {} });
 }
 
