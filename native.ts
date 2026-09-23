@@ -374,15 +374,65 @@ let senderWebContents: WebContents | null = null;
 const FRIEND_STATUS_MAX = 200;
 const friendStatusByMessageId = new Map<string, boolean>();
 
-export function noteFriendStatus(_: IpcMainInvokeEvent, messageId: string, isFriend: boolean): void {
-    if (!messageId) return;
-    // True LRU: delete + re-set so the newest sits at the tail of insertion order.
-    if (friendStatusByMessageId.has(messageId)) friendStatusByMessageId.delete(messageId);
-    friendStatusByMessageId.set(messageId, !!isFriend);
-    if (friendStatusByMessageId.size > FRIEND_STATUS_MAX) {
-        const oldest = friendStatusByMessageId.keys().next().value;
-        if (oldest !== undefined) friendStatusByMessageId.delete(oldest);
+// Fallback store for Discord builds that no longer emit `launch=` in toastXml.
+// On those builds extractNavData always returns null, so the messageId lookup above
+// can never resolve and friend highlighting silently never engages - the same root
+// cause that broke jump-to-message in v0.3.0, fixed the same way: key off the sender
+// display name that Discord puts in the notification title.
+//
+// Entries carry a short expiry rather than relying on LRU capacity alone. The entry
+// only has to survive the gap between MESSAGE_CREATE and the notification firing -
+// milliseconds normally, at most coalesceWindowMs. Expiring quickly means a friend's
+// name cannot highlight an unrelated sender who happens to share it an hour later.
+const FRIEND_NAME_TTL_MS = 15_000;
+const FRIEND_NAME_MAX = 100;
+const friendNameUntil = new Map<string, number>();
+
+// Called only for messages whose author IS a friend (the renderer gates on that), so
+// presence in either store means "friend" and absence means "not a friend".
+// `names` carries every display name Discord might have rendered in the title -
+// guild nickname, global display name, username - since the renderer cannot know
+// which one the notification used.
+export function noteFriendStatus(_: IpcMainInvokeEvent, messageId: string, names: string[]): void {
+    if (messageId) {
+        // True LRU: delete + re-set so the newest sits at the tail of insertion order.
+        if (friendStatusByMessageId.has(messageId)) friendStatusByMessageId.delete(messageId);
+        friendStatusByMessageId.set(messageId, true);
+        if (friendStatusByMessageId.size > FRIEND_STATUS_MAX) {
+            const oldest = friendStatusByMessageId.keys().next().value;
+            if (oldest !== undefined) friendStatusByMessageId.delete(oldest);
+        }
     }
+
+    const now = Date.now();
+    for (const n of names ?? []) {
+        if (!n) continue;
+        if (friendNameUntil.has(n)) friendNameUntil.delete(n);
+        friendNameUntil.set(n, now + FRIEND_NAME_TTL_MS);
+    }
+    if (friendNameUntil.size > FRIEND_NAME_MAX) {
+        for (const [k, exp] of friendNameUntil) {
+            if (exp <= now) friendNameUntil.delete(k);
+        }
+        while (friendNameUntil.size > FRIEND_NAME_MAX) {
+            const oldest = friendNameUntil.keys().next().value;
+            if (oldest === undefined) break;
+            friendNameUntil.delete(oldest);
+        }
+    }
+}
+
+// True when `displayName` was noted as a friend recently enough to still count.
+// Expired entries are dropped on read so the map self-cleans without a timer.
+function isFriendName(displayName: string): boolean {
+    if (!displayName) return false;
+    const exp = friendNameUntil.get(displayName);
+    if (exp === undefined) return false;
+    if (Date.now() >= exp) {
+        friendNameUntil.delete(displayName);
+        return false;
+    }
+    return true;
 }
 
 // Extracts the guild/channel/message IDs Discord encodes in the toastXml
@@ -435,6 +485,29 @@ function deriveFallbackCoalesceKey(title: string): string | null {
     }
     if (closeIdx === -1) return null;
     return `srv:${raw.slice(openIdx + 1, closeIdx)}`;
+}
+
+// Pull just the sender's display name out of a notification title. Discord's format
+// is "Username (#channel-name, Category)" for server messages and a bare "Username"
+// for DMs. Uses the same balanced-paren walk as buildUpdateData and
+// deriveFallbackCoalesceKey, because category names may themselves contain parens
+// (e.g. "Community (Non-GTA)") and stopping at the first `)` would truncate.
+//
+// Operates on the RAW title, before template substitution and before the coalesce
+// "(N new)" suffix is appended, so the name matches what the renderer pushed.
+function extractDisplayName(rawTitle: string): string {
+    const raw = (rawTitle || "").trim();
+    const ctxIdx = raw.search(/\s+\(#/);
+    if (ctxIdx === -1) return raw;
+    const openIdx = raw.indexOf("(", ctxIdx);
+    let depth = 0;
+    let closeIdx = -1;
+    for (let i = openIdx; i < raw.length; i++) {
+        if (raw[i] === "(") depth++;
+        else if (raw[i] === ")") { if (--depth === 0) { closeIdx = i; break; } }
+    }
+    if (closeIdx === -1) return raw;
+    return raw.slice(0, ctxIdx).trim();
 }
 
 // -- Display cache ------------------------------------------------------------
@@ -670,9 +743,16 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // Resolve the avatar in parallel with the window acquire: both touch independent
     // resources (disk vs pool) and used to run back-to-back. The icon-read is also
     // deferred until *after* the burst-skip check above, so dropped bursts pay no I/O.
-    const iconPromise = (!options.icon && options.iconPath)
+    //
+    // tPre closes out everything before the parallel acquire: burst-skip, eviction, and
+    // on the DM path possibly an awaited createGroupWindow(), which pays a full window
+    // create + loadURL of its own. Timed separately so it isn't misread as pool cost.
+    const tPre = performance.now();
+    let tIcon = tPre;
+    const iconPromise = ((!options.icon && options.iconPath)
         ? iconPathToDataUrl(options.iconPath)
-        : Promise.resolve(options.icon);
+        : Promise.resolve(options.icon)
+    ).then(v => { tIcon = performance.now(); return v; });
     const [resolvedIcon, win] = await Promise.all([iconPromise, acquireWindow()]);
     const tAcquire = performance.now();
 
@@ -773,8 +853,13 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // unconditional - they cost nanoseconds, and making them conditional would emit one
     // garbage timing line for whichever toast is in flight when the user flips npDebug.
     if (debugEnabled) {
+        // acquire = pre + max(icon, create + ready). icon runs in parallel with the pool
+        // acquire, so whichever of the two is slower is the one that set the number.
+        const at = acquireTiming.get(win);
         logDiag("toast.show",
             `key=${toastKey} isDM=${isDM} acquire=${(tAcquire - t0).toFixed(1)}ms ` +
+            `[pre=${(tPre - t0).toFixed(1)} icon=${(tIcon - tPre).toFixed(1)} ` +
+            `create=${at ? at.create.toFixed(1) : "?"} ready=${at ? at.ready.toFixed(1) : "?"}] ` +
             `update=${(tUpdate - tAcquire).toFixed(1)}ms ` +
             `tail=${(tEnd - tUpdate).toFixed(1)}ms total=${(tEnd - t0).toFixed(1)}ms ` +
             `measuredH=${measuredH}`);
@@ -1068,9 +1153,29 @@ function warmPool(): void {
     }
 }
 
+// Diagnostic split of acquireWindow's cost, read back by showToastInternal's
+// toast.show line. `create` is the synchronous warmPool() refill - new BrowserWindow()
+// spawns a renderer process and blocks the main process while it does. `ready` is the
+// await on the handed-out window's loadURL. Only populated while npDebug is on; the
+// performance.now() marks themselves stay unconditional for the same toggle-race
+// reason as showToastInternal's.
+const acquireTiming = new WeakMap<BrowserWindow, { create: number; ready: number; }>();
+
+function recordAcquireTiming(w: BrowserWindow, tCreate: number, tReady: number): void {
+    if (!debugEnabled) return;
+    acquireTiming.set(w, { create: tReady - tCreate, ready: performance.now() - tReady });
+}
+
 async function acquireWindow(): Promise<BrowserWindow> {
     while (windowPool.length > 0) {
-        const w = windowPool.pop()!;
+        // FIFO, not LIFO. warmPool() pushes fresh windows onto the END of the array, so
+        // pop() handed every acquire the newest window in the pool - the one created by
+        // the previous acquire's refill, and therefore the least likely to have finished
+        // loadURL. Diagnostics showed acquire averaging ~296 ms with zero pool MISSes:
+        // the time was going to waiting on a not-yet-loaded window while older,
+        // fully-loaded ones sat untouched at the front. shift() takes the oldest.
+        // O(n), but n is capped at POOL_MAX (16), so the cost is irrelevant.
+        const w = windowPool.shift()!;
         if (!w.isDestroyed()) {
             // Synchronous refill — replaces the previous `process.nextTick(warmPool)`.
             // Under burst, multiple acquireWindow calls run interleaved at their await
@@ -1080,14 +1185,15 @@ async function acquireWindow(): Promise<BrowserWindow> {
             // when already at target), so the only added cost is `new BrowserWindow()`
             // for as many slots as were consumed since the last warmPool — typically 1.
             //
-            // Note: the just-created windows are added immediately, but their loadURL
-            // is still pending. A subsequent acquireWindow popping one of them will
-            // still pay the cold loadURL cost (~50-150 ms) on its `await poolReady.get`.
-            // This is unavoidable without pre-creating the windows much earlier; what
-            // sync refill DOES fix is the "pool empty so we go MISS path and create yet
-            // another window we already had" double-create scenario.
+            // The refilled window lands at the BACK of the array. With FIFO ordering it
+            // is not handed out until every older window ahead of it has been used, so
+            // it has a whole pool's worth of toasts to finish loadURL. In steady state
+            // the window handed out here loaded long ago and the await resolves at once.
+            const tCreate = performance.now();
             warmPool();
+            const tReady = performance.now();
             await poolReady.get(w);
+            recordAcquireTiming(w, tCreate, tReady);
             return w;
         }
     }
@@ -1096,9 +1202,12 @@ async function acquireWindow(): Promise<BrowserWindow> {
     // diagnostics, the user may want to raise `Pool minimum size` so the floor exceeds
     // their typical burst length.
     if (debugEnabled) logDiag("pool", `MISS — cold-create (target=${targetPoolSize()})`);
+    const tCreate = performance.now();
     warmPool();
     const w = createPoolWindow();
+    const tReady = performance.now();
     await poolReady.get(w);
+    recordAcquireTiming(w, tCreate, tReady);
     return w;
 }
 
@@ -1404,9 +1513,18 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
     const needsNavData = cfg.redirectOnClick || cfg.coalesceWindowMs > 0 || cfg.friendHighlightEnabled;
     const navData = needsNavData ? extractNavData(notif as any) : null;
 
-    // Resolve friend status from the message ID the renderer pushed via noteFriendStatus.
-    // Absent entry → not highlighted (graceful: feature simply doesn't engage for this toast).
-    const isFriend = !!(cfg.friendHighlightEnabled && navData && friendStatusByMessageId.get(navData.messageId));
+    // Resolve friend status. Two paths, in preference order:
+    //   1. messageId from toastXml's `launch=` attribute - precise, but Discord stopped
+    //      emitting `launch=` on at least one build, where navData is permanently null.
+    //   2. The sender display name parsed out of the title - the fallback that keeps the
+    //      feature alive on those builds. Verify which path is live via the `nav-extract`
+    //      diagnostic: xmlHasLaunch=false means path 1 is dead and 2 is doing the work.
+    // Absent from both -> not highlighted (graceful: the feature simply doesn't engage).
+    const senderName = cfg.friendHighlightEnabled ? extractDisplayName(title) : "";
+    const isFriend = !!cfg.friendHighlightEnabled && (
+        (!!navData && friendStatusByMessageId.get(navData.messageId) === true)
+        || isFriendName(senderName)
+    );
 
     // Pick a coalesce key: prefer the real channelId (precise, survives renames);
     // fall back to a title-derived key when navData extraction fails. The fallback
@@ -1426,7 +1544,8 @@ async function processNotification(notif: InstanceType<typeof ElectronNotificati
         logDiag("nav-extract",
             `channelId=${navData?.channelId ?? "null"} messageId=${navData?.messageId ?? "null"} ` +
             `xmlHasLaunch=${xmlHasLaunch} coalesceOn=${cfg.coalesceWindowMs > 0} ` +
-            `key=${coalesceKey ?? "null"} willCoalesce=${!!coalesceKey}`);
+            `key=${coalesceKey ?? "null"} willCoalesce=${!!coalesceKey} ` +
+            `sender=${senderName || "null"} isFriend=${isFriend}`);
     }
 
     // Coalescing path: when enabled AND we have a key (real channelId or title-derived
@@ -1533,6 +1652,7 @@ export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
     for (const buf of coalesceBuffers.values()) clearTimeout(buf.timer);
     coalesceBuffers.clear();
     friendStatusByMessageId.clear();
+    friendNameUntil.clear();
     for (const timer of pendingReposition.values()) clearTimeout(timer);
     pendingReposition.clear();
     pendingMoves.clear();

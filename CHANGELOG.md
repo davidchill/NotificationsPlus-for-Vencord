@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.4.1 — 2026-09-22
+
+Two fixes to v0.4.0, both found by reading live `npDebug` output rather than the code. Friend highlighting, new in v0.4.0, never engaged on a real notification; and the BrowserWindow pool handed each toast the window least likely to be ready. Also adds a breakdown to the `toast.show` diagnostic, which showed where toast latency actually goes and sets up v0.4.2.
+
+### Fixed
+
+- **Friend highlighting now engages on real notifications** — v0.4.0 resolved friend status only through `friendStatusByMessageId.get(navData.messageId)`. On current Discord builds `toastXml` carries no `launch=` attribute, so `extractNavData` returns `null` for every notification (the `nav-extract` diagnostic prints `channelId=null messageId=null xmlHasLaunch=false` on every line) and `isFriend` was always false. This is the same root cause that broke jump-to-message in v0.3.0, and it is fixed the same way: by keying on something that can be derived from the title. `onMessageCreate` now pushes, for friends only, the message ID plus every display name Discord might have rendered in the title (guild nickname, global display name, username), because the renderer cannot know which one the OS notification used. New `extractDisplayName()` parses the sender from the **raw** title with the same balanced-paren walk as `deriveFallbackCoalesceKey`, before template substitution and before the coalesce `"(N new)"` suffix is appended. `processNotification` tries the message ID first and falls back to the name. Name entries live in `friendNameUntil` with a 15-second expiry (`FRIEND_NAME_TTL_MS`) and a 100-entry cap: long enough to cover the gap between `MESSAGE_CREATE` and the notification firing, short enough that a friend's name cannot highlight an unrelated sender who shares it later. Expired entries are dropped on read. Verified against a real friend message. The bug went unnoticed because the settings panel's test button passes `isFriend: true` straight into `buildToastOptions`, so the preview rendered correctly while real notifications did not.
+
+### Changed
+
+- **The window pool hands out its oldest window (FIFO)** — `warmPool()` appends new windows to the end of `windowPool`, and `acquireWindow()` also took from the end with `pop()`. Each toast therefore received the window created by the previous toast's refill, the one least likely to have finished `loadURL`. `acquireWindow()` now takes from the front with `shift()`. Measured result: `ready`, the wait for the handed-out window to finish loading, is now 0.2–0.5 ms on every toast. `shift()` is O(n), but n is capped at `POOL_MAX` (16). This did **not** noticeably reduce end-to-end toast latency, because the load wait was not the dominant cost; see the diagnostics entry below.
+
+### Added
+
+- **`toast.show` breaks `acquire` down into `[pre= icon= create= ready=]`**, where `acquire = pre + max(icon, create + ready)`. `pre` covers work before the pool is touched (burst-skip, eviction, and on the DM path a possibly awaited `createGroupWindow()`); `icon` is the avatar read, which runs in parallel with the pool acquire; `create` is the synchronous `warmPool()` refill; `ready` is the wait on the handed-out window's `loadURL`. Timings are recorded in an `acquireTiming` `WeakMap` only while `npDebug` is on. The first live run showed `icon` within a millisecond of `acquire` on every toast (139–792 ms for 15–35 KB files), and `create` at 100–210 ms of synchronous main-process time per toast, with coalesce timers firing up to ~290 ms late as a side effect. Both are the targets of v0.4.2.
+- **`nav-extract` reports `sender` and `isFriend`**, so friend highlighting can be confirmed working on a real message.
+
+### Bundle checklist (this release)
+- `native.ts` — `extractDisplayName`, `friendNameUntil` store with TTL and `isFriendName`, `noteFriendStatus(messageId, names)` signature, two-path `isFriend` resolution, `nav-extract` sender/isFriend fields, `friendNameUntil` cleared on stop, `acquireWindow` switched to `shift()`, `acquireTiming` + `recordAcquireTiming`, `tPre`/`tIcon` marks and the `toast.show` breakdown
+- `index.tsx` — `friendNameCandidates()`, widened `onMessageCreate` payload type, name candidates passed to `noteFriendStatus`
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump, friend-highlighting mechanics, FIFO pool and refill cost, `toast.show` and `nav-extract` diagnostic descriptions, `noteFriendStatus` signature
+
 ## v0.4.0 — 2026-09-20
 
 Adds friend highlighting, then follows it with a performance pass aimed squarely at the per-toast hot path. The headline finding: the embedded Google Font CSS — measured at roughly 716 KB for the default Nunito — was being serialized over IPC and reparsed by the toast renderer on *every single toast*, sitting directly in front of the height measurement that gates `win.show()`. It now ships once per window during background pool warm-up.

@@ -179,7 +179,25 @@ function channelContextKey(channelName: string, categoryName: string): string {
     return categoryName ? `#${channelName}, ${categoryName}` : `#${channelName}`;
 }
 
-function onMessageCreate(payload: { message?: { channel_id?: string; id?: string; author?: { id?: string; }; }; }) {
+// Discord resolves a notification title's sender name as guild nickname > global
+// display name > username. The renderer cannot tell which one the OS notification
+// actually rendered, so it pushes all of them and lets main match whichever appears.
+function friendNameCandidates(msg: { author?: { username?: string; global_name?: string; }; member?: { nick?: string; }; }): string[] {
+    const out: string[] = [];
+    for (const n of [msg.member?.nick, msg.author?.global_name, msg.author?.username]) {
+        if (n && !out.includes(n)) out.push(n);
+    }
+    return out;
+}
+
+function onMessageCreate(payload: {
+    message?: {
+        channel_id?: string;
+        id?: string;
+        author?: { id?: string; username?: string; global_name?: string; };
+        member?: { nick?: string; };
+    };
+}) {
     const msg = payload?.message;
     if (!msg?.channel_id || !msg.id) return;
 
@@ -196,10 +214,14 @@ function onMessageCreate(payload: { message?: { channel_id?: string; id?: string
     // Skipping them also stops non-friend traffic from evicting real friend entries out of
     // main's FRIEND_STATUS_MAX-slot LRU before the toast builds, which matters most when
     // coalescing holds the toast behind a burst.
+    //
+    // Both the message ID and every candidate display name are pushed. The ID is the
+    // precise key but is unusable on builds where Discord omits `launch=` from toastXml
+    // (currently the common case), so the names are what actually make the feature work.
     if (settings.store.useCustomNativeToast && settings.store.friendHighlightEnabled) {
         const authorId = msg.author?.id;
         if (authorId && RelationshipStore?.isFriend?.(authorId)) {
-            Native.noteFriendStatus(msg.id, true);
+            Native.noteFriendStatus(msg.id, friendNameCandidates(msg));
         }
     }
 
