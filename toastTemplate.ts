@@ -49,7 +49,12 @@ body{-webkit-font-smoothing:antialiased}
 }}
 @keyframes slide-in{from{transform:translateX(var(--sf)) scale(0.97);opacity:0}to{transform:translateX(0) scale(1);opacity:1}}
 @keyframes fade-in{from{opacity:0;transform:scale(0.97)}to{opacity:1;transform:scale(1)}}
-@keyframes shrink{from{width:100%}to{width:0%}}
+/* The countdown bar animates transform, not width. Animating width forced a layout and
+   repaint of the bar on every frame for the toast's entire lifetime, in every visible
+   toast at once. scaleX on its own compositor layer (will-change) is rasterized once
+   and only re-composited per frame. The gradient scales with the bar exactly as it
+   compressed with width before; only the horizontal spread of the glow narrows. */
+@keyframes shrink{from{transform:scaleX(1)}to{transform:scaleX(0)}}
 .toast{background:var(--bg);color:var(--text);border-radius:10px;border-left:4px solid var(--accent);border-top:1px solid var(--hi);padding:14px 16px 14px 12px;display:flex;align-items:flex-start;gap:12px;width:100%;min-height:${TOAST_MIN_H}px;box-shadow:var(--shadow),var(--glow);position:relative;cursor:pointer;overflow:hidden;user-select:none;transition:background .12s,transform .1s,opacity .12s}
 .toast:hover{background:var(--bgh);transform:scale(1.012)}
 .toast.exiting{transform:scale(0.96)!important;opacity:0!important;pointer-events:none}
@@ -58,6 +63,8 @@ body{-webkit-font-smoothing:antialiased}
 .toast.anim-fade{animation:fade-in 150ms ease both}
 .icon-wrap{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:var(--ishadow)}
 .icon{width:44px;height:44px;object-fit:cover;border-radius:50%}
+@keyframes icon-in{from{opacity:0}to{opacity:1}}
+.icon.late{animation:icon-in .18s ease both}
 .content{flex:1;min-width:0;padding-top:2px}
 .title-row{display:flex;align-items:center;gap:5px;margin-bottom:2px;min-width:0}
 .title{font-size:var(--ts);font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
@@ -69,7 +76,7 @@ body{-webkit-font-smoothing:antialiased}
 .body{font-size:var(--bs);line-height:1.4;color:var(--text);overflow-wrap:break-word;word-break:break-word;max-height:var(--bmax);overflow:hidden}
 .body.clipped{-webkit-mask-image:linear-gradient(to bottom,#000 60%,transparent);mask-image:linear-gradient(to bottom,#000 60%,transparent)}
 .mention{color:var(--accent)}.link{color:var(--accent);text-decoration:underline}
-.bar{position:absolute;bottom:0;left:0;height:6px;background:linear-gradient(to right,var(--accent) 55%,transparent);box-shadow:0 0 8px var(--accent),0 0 2px var(--accent);display:none}
+.bar{position:absolute;bottom:0;left:0;width:100%;height:6px;transform-origin:0 50%;will-change:transform;background:linear-gradient(to right,var(--accent) 55%,transparent);box-shadow:0 0 8px var(--accent),0 0 2px var(--accent);display:none}
 .bar.run{display:block;animation:shrink var(--bdur) cubic-bezier(0,0,.58,1) forwards}
 .lbtn{position:absolute;bottom:14px;right:12px;font-size:10px;font-weight:600;color:var(--accent);background:transparent;border:1px solid var(--accent);border-radius:4px;padding:2px 7px;text-decoration:none;cursor:pointer;opacity:.8;letter-spacing:.02em;transition:opacity .15s,background .15s;display:none}
 .lbtn.show{display:block}.lbtn:hover{opacity:1;background:var(--hbg)}
@@ -81,6 +88,9 @@ var FSVG=${JSON.stringify(FRIEND_SVG)};
 // Font CSS is pushed once per window via __npFont (the preload-less fallback path
 // for native.ts's pushFontIfStale) rather than riding along on every update.
 window.__npFont=function(css){var fs=document.getElementById('fs');if(fs)fs.textContent=css||'';};
+// Late avatar, pushed after show when the read missed the first paint (__npIcon is the
+// preload-less fallback for native.ts's pushLateIcon). Empty string = read failed.
+window.__npIcon=function(icon){var iw=document.getElementById('iw');if(!iw)return;if(!icon){iw.innerHTML=SVG;return;}var img=document.createElement('img');img.className='icon late';img.src=icon;img.onerror=function(){iw.innerHTML=SVG;};iw.innerHTML='';iw.appendChild(img);};
 window.__npUpdate=function(d){
   var R=document.documentElement.style;
   R.setProperty('--ar',d.ar);R.setProperty('--ag',d.ag);R.setProperty('--ab',d.ab);
@@ -104,7 +114,7 @@ window.__npUpdate=function(d){
     // leaving an empty accent-colored circle.
     img.onerror=function(){iw.innerHTML=SVG;};
     iw.innerHTML='';iw.appendChild(img);
-  }else{iw.innerHTML=SVG;}
+  }else{iw.innerHTML=d.ip?'':SVG;}
   document.getElementById('ttl').textContent=d.title;
   var fb=document.getElementById('fb');
   if(d.fbadge){fb.innerHTML=FSVG;fb.className='fbadge show';}else{fb.className='fbadge';fb.innerHTML='';}
@@ -177,7 +187,9 @@ function applyUpdate(d) {
     iw.innerHTML = "";
     iw.appendChild(img);
   } else {
-    iw.innerHTML = SVG;
+    // Avatar still loading: leave the accent circle empty rather than flashing the
+    // Discord glyph, which would then visibly swap. applyIcon fills it in after show.
+    iw.innerHTML = d.ip ? "" : SVG;
   }
   document.getElementById("ttl").textContent = d.title;
   const fb = document.getElementById("fb");
@@ -211,6 +223,21 @@ function applyUpdate(d) {
   return document.documentElement.scrollHeight;
 }
 
+// Late avatar, sent on np:icon once the toast is already on screen, when the avatar
+// read missed the first paint. Fades in over the empty placeholder. An empty string
+// means the read failed, so fall back to the Discord glyph as before.
+function applyIcon(icon) {
+  const iw = document.getElementById("iw");
+  if (!iw) return;
+  if (!icon) { iw.innerHTML = SVG; return; }
+  const img = document.createElement("img");
+  img.className = "icon late";
+  img.src = icon;
+  img.onerror = function () { iw.innerHTML = SVG; };
+  iw.innerHTML = "";
+  iw.appendChild(img);
+}
+
 // Applied once per window on np:font, not on every np:update. The CSS inlines every
 // weight and unicode subset as base64 (~716 KB for Nunito), and assigning it to the
 // style element forces a full CSSOM reparse - far too heavy to repeat per toast.
@@ -231,6 +258,7 @@ function register() {
     if (d && d._reply) { try { ipcRenderer.send(d._reply, h); } catch (e) {} }
   });
   ipcRenderer.on("np:font", function (_e, css) { try { applyFont(css); } catch (e) {} });
+  ipcRenderer.on("np:icon", function (_e, icon) { try { applyIcon(icon); } catch (e) {} });
   ipcRenderer.on("np:close-animate", function () { try { applyCloseAnim(); } catch (e) {} });
 }
 

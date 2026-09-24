@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.4.2 — 2026-09-24
+
+A performance release aimed at the two costs the v0.4.1 `toast.show` breakdown exposed, plus the one piece of work every visible toast repeated on every frame. Measured on a live session: the average time from notification to visible toast fell from **~591 ms (244–962 ms) to ~91 ms (74–107 ms)**, and `acquire` fell from 139–792 ms to 1.0–1.7 ms.
+
+### Performance
+
+- **The avatar read no longer delays the toast** — v0.4.1 awaited `Promise.all([iconPromise, acquireWindow()])`, and the avatar read was the slower half on every toast: 139–792 ms for 15–35 KB temp files. The read still starts at the same point, but only `acquireWindow()` is awaited now. Whatever avatar is ready by then goes into the first paint. URL overrides and icon-cache hits resolve in a microtask, so repeat senders appear with their avatar immediately. Anything slower paints as an empty accent-colored circle (new `UpdateData.ip` flag; `iw.innerHTML = ""` instead of the Discord glyph, so there is no visible glyph-to-avatar swap) and is delivered after show by `pushLateIcon()` over a new `np:icon` IPC channel (`applyIcon` in the preload, `window.__npIcon` in the inline fallback), fading in over a 180 ms `icon-in` keyframe. The avatar slot is a fixed 44 px, so a late avatar never changes toast height. The handler is attached after `sendToastUpdate`, so IPC ordering guarantees `np:icon` lands after the placeholder paint rather than being overwritten by it. In the first live run, the two late avatars landed 0.3 ms and 17 ms after their toasts appeared.
+- **Pool refill moved after show, one window at a time** — `warmPool()` ran synchronously inside `acquireWindow()` before every toast, and `new BrowserWindow()` is synchronous: 100–210 ms of main-process time per window, during which nothing else in Discord's main process ran. Coalesce timers were observed firing up to ~290 ms late as a result. `acquireWindow()` no longer refills. `showToastInternal` calls `warmPool()` once the toast is on screen, and `warmPool` now creates a single window per timer callback, `REFILL_GAP_MS` (50 ms) apart, instead of in a synchronous loop. That also removes the startup freeze from building the entire pool back to back. The pool-MISS path creates only the one window its toast needs. A pending refill is cancelled in `stopMainProcessPatch`, and the timer callback bails out if the plugin has stopped, so a late refill can never leak a window. Measured: `create=0.0` on every toast, and coalesce latencies steady at 103–114 ms. The window creation itself (`refill +1 in 88–147 ms`) still happens once per notification; it no longer delays anything, and reusing windows is the planned fix.
+- **Countdown bar animates `transform` instead of `width`** — animating `width` forced a layout and repaint of the bar on every frame for the toast's whole lifetime, in every visible toast at once. It now uses `transform: scaleX` with `transform-origin: 0 50%` on its own compositor layer (`will-change: transform`), so the bar is drawn once and only re-composited each frame. It looks the same, apart from the glow narrowing slightly at the shrinking tip.
+
+### Changed
+
+- **`toast.show` breakdown is now `[pre= create= ready=] icon=`**, with `acquire = pre + create + ready`. `icon=` reports the read time when the avatar made the first paint, or `late` when it was delivered after show.
+- **New `toast.icon` diagnostic scope** reports how long after the toast appeared a late avatar landed, and how long its read took.
+- **The `pool` scope logs each background refill** as `refill +1 in …ms (size n/target)`, making the per-window creation cost visible now that it no longer shows up in `toast.show`.
+- **The icon-cache staleness check no longer blocks a cache hit.** The debug-only `stat` now runs in the background. Awaiting it would have pushed cache hits into the late-avatar path whenever `npDebug` was on, so turning diagnostics on would have changed the behavior being measured.
+
+### Bundle checklist (this release)
+- `native.ts` — `iconPromise` no longer awaited, `UpdateData.ip` + `buildUpdateData(…, iconPending)`, `pushLateIcon` + post-show `np:icon` delivery and `toast.icon` diagnostic, `warmPool` rewritten as a spaced one-at-a-time refill (`refillTimer`, `REFILL_GAP_MS`) called after show, refill removed from `acquireWindow`, MISS path creates one window, refill timer cleared on stop, `toast.show` breakdown updated, icon-cache `stat` made fire-and-forget
+- `toastTemplate.ts` — `icon-in` keyframe and `.icon.late`, empty placeholder when `d.ip` in both `applyUpdate` and `__npUpdate`, `applyIcon` + `np:icon` handler in `PRELOAD_SRC`, `window.__npIcon` in `TEMPLATE_HTML`, countdown bar `shrink` keyframe switched to `transform: scaleX` with `will-change: transform`
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump, avatar delivery, pool refill timing, countdown bar animation, `toast.show` / `toast.icon` / `pool` / `icon-cache` diagnostic descriptions
+
 ## v0.4.1 — 2026-09-22
 
 Two fixes to v0.4.0, both found by reading live `npDebug` output rather than the code. Friend highlighting, new in v0.4.0, never engaged on a real notification; and the BrowserWindow pool handed each toast the window least likely to be ready. Also adds a breakdown to the `toast.show` diagnostic, which showed where toast latency actually goes and sets up v0.4.2.

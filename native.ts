@@ -270,7 +270,7 @@ interface UpdateData {
     ts: number; cs: number; bs: number; bmax: number;
     sf: string; font: string;
     grad: boolean; bgD: string; bgL: string; bhD: string; bhL: string;
-    icon: string; title: string; isDM: boolean; cat: string; ch: string;
+    icon: string; ip: boolean; title: string; isDM: boolean; cat: string; ch: string;
     bhtml: string; lnk: string | null;
     barMs: number; ent: string; clk: boolean;
     fbadge: boolean;
@@ -280,7 +280,8 @@ function buildUpdateData(
     options: ToastOptions,
     effectiveDuration: number,
     clickable: boolean,
-    isRight: boolean
+    isRight: boolean,
+    iconPending: boolean
 ): UpdateData {
     const { body, icon, font, titleSize, channelSize, bodySize, entrance, gradientBg, bgOpacity, dmAccent, serverAccent } = options;
 
@@ -343,6 +344,7 @@ function buildUpdateData(
         font,
         grad: gradientBg, bgD, bgL, bhD, bhL,
         icon: icon || "",
+        ip: iconPending,
         title: displayName, isDM,
         cat: categoryDisplay, ch: channelDisplay,
         bhtml: formatBody(body),
@@ -748,13 +750,27 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // on the DM path possibly an awaited createGroupWindow(), which pays a full window
     // create + loadURL of its own. Timed separately so it isn't misread as pool cost.
     const tPre = performance.now();
-    let tIcon = tPre;
+    //
+    // The avatar read no longer gates the toast. It was measured at 139-792 ms per toast
+    // for 15-35 KB files - far slower than the disk read itself should be - and was the
+    // single largest cost on the show path. It still starts here, in parallel with the
+    // pool acquire, and whatever is ready by the time the window is goes into the first
+    // paint: URL overrides and icon-cache hits resolve in a microtask, so repeat senders
+    // still show their avatar immediately. Anything slower paints as an empty
+    // accent-colored placeholder and is pushed in after show via np:icon / __npIcon.
+    // The avatar slot is a fixed 44 px, so the late arrival never changes toast height.
+    let tIcon = 0;
+    // `as` keeps TypeScript from narrowing this to `undefined` - it is assigned in the
+    // .then callback below, which control-flow analysis cannot see.
+    let iconReady = undefined as string | undefined;
     const iconPromise = ((!options.icon && options.iconPath)
         ? iconPathToDataUrl(options.iconPath)
         : Promise.resolve(options.icon)
-    ).then(v => { tIcon = performance.now(); return v; });
-    const [resolvedIcon, win] = await Promise.all([iconPromise, acquireWindow()]);
+    ).then(v => { tIcon = performance.now(); iconReady = v; return v; });
+    const win = await acquireWindow();
     const tAcquire = performance.now();
+    const iconPending = iconReady === undefined;
+    const resolvedIcon = iconReady ?? "";
 
     const entry: StackEntry = { win, h: TOAST_MIN_H, isGroup: false, addedAt: Date.now() };
     stack.unshift(entry);
@@ -784,7 +800,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         ensureFontCached(options.font).then(refreshPoolFonts).catch(() => {});
     }
 
-    const updateData = buildUpdateData({ ...options, icon: resolvedIcon }, effectiveDuration, !!onClicked, isRight);
+    const updateData = buildUpdateData({ ...options, icon: resolvedIcon }, effectiveDuration, !!onClicked, isRight, iconPending);
 
     // sendToastUpdate combines content update and height measurement into a single
     // round-trip. Uses preload IPC when available (faster, structured clone), falls
@@ -822,6 +838,24 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         }
     }
 
+    // With the toast on screen, deliver the avatar if it missed the first paint, then top
+    // the pool back up. Both used to happen BEFORE show. The avatar handler is attached
+    // after sendToastUpdate on purpose: IPC to a renderer is ordered, so np:icon always
+    // lands after the np:update that painted the placeholder, never before it.
+    const tShown = performance.now();
+    if (iconPending) {
+        iconPromise.then(icon => {
+            if (win.isDestroyed()) return;
+            pushLateIcon(win, icon);
+            if (debugEnabled) {
+                logDiag("toast.icon",
+                    `key=${toastKey} avatar landed ${(performance.now() - tShown).toFixed(1)}ms after show ` +
+                    `(read took ${(tIcon - tPre).toFixed(1)}ms${icon ? "" : ", read failed - fallback glyph"})`);
+            }
+        }).catch(() => {});
+    }
+    warmPool();
+
     // Handle all vc-np:// navigations: toast click and "Open Link" button.
     win.webContents.on("will-navigate", (event, url) => {
         if (!url.startsWith("vc-np://")) return;
@@ -853,13 +887,14 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     // unconditional - they cost nanoseconds, and making them conditional would emit one
     // garbage timing line for whichever toast is in flight when the user flips npDebug.
     if (debugEnabled) {
-        // acquire = pre + max(icon, create + ready). icon runs in parallel with the pool
-        // acquire, so whichever of the two is slower is the one that set the number.
+        // acquire = pre + create + ready. The avatar no longer gates the toast, so it is
+        // reported beside the breakdown: its read time if it made the first paint, or
+        // "late" if it was pushed in after show (a toast.icon line follows with timing).
         const at = acquireTiming.get(win);
         logDiag("toast.show",
             `key=${toastKey} isDM=${isDM} acquire=${(tAcquire - t0).toFixed(1)}ms ` +
-            `[pre=${(tPre - t0).toFixed(1)} icon=${(tIcon - tPre).toFixed(1)} ` +
-            `create=${at ? at.create.toFixed(1) : "?"} ready=${at ? at.ready.toFixed(1) : "?"}] ` +
+            `[pre=${(tPre - t0).toFixed(1)} create=${at ? at.create.toFixed(1) : "?"} ` +
+            `ready=${at ? at.ready.toFixed(1) : "?"}] icon=${iconPending ? "late" : (tIcon - tPre).toFixed(1) + "ms"} ` +
             `update=${(tUpdate - tAcquire).toFixed(1)}ms ` +
             `tail=${(tEnd - tUpdate).toFixed(1)}ms total=${(tEnd - t0).toFixed(1)}ms ` +
             `measuredH=${measuredH}`);
@@ -961,15 +996,16 @@ async function iconPathToDataUrl(src: string): Promise<string> {
         iconCache.set(src, cached);
         if (debugEnabled) {
             iconHits++;
-            let note = "";
-            try {
-                const { stat } = require("fs/promises") as typeof import("fs/promises");
-                const st = await stat(src);
-                if (st.size !== cached.size) note = ` STALE cachedBytes=${cached.size} onDiskBytes=${st.size}`;
-            } catch {
-                note = " (no longer on disk)";
-            }
-            logDiag("icon-cache", `HIT ${iconRate()} entries=${iconCache.size}/${ICON_CACHE_MAX}${note} path=${src}`);
+            // Fire-and-forget. Awaiting the stat here would delay the cache hit, and with
+            // the avatar no longer gating the toast that could push a hit into the late
+            // path - debug mode would change the very behavior it is observing.
+            const rate = iconRate();
+            const entries = iconCache.size;
+            const { stat } = require("fs/promises") as typeof import("fs/promises");
+            stat(src).then(
+                st => st.size !== cached.size ? ` STALE cachedBytes=${cached.size} onDiskBytes=${st.size}` : "",
+                () => " (no longer on disk)"
+            ).then(note => logDiag("icon-cache", `HIT ${rate} entries=${entries}/${ICON_CACHE_MAX}${note} path=${src}`));
         }
         return cached.dataUrl;
     }
@@ -1106,6 +1142,23 @@ function pushFontIfStale(win: BrowserWindow, fontName: string): void {
     }
 }
 
+// Deliver an avatar that missed the toast's first paint. Same two-path shape as
+// pushFontIfStale: np:icon through the preload, or __npIcon when the preload write
+// failed. An empty string means the read failed; the renderer shows the Discord glyph.
+function pushLateIcon(win: BrowserWindow, icon: string): void {
+    try {
+        if (preloadPath) {
+            win.webContents.send("np:icon", icon);
+        } else {
+            win.webContents.executeJavaScript(
+                `window.__npIcon&&window.__npIcon(${JSON.stringify(icon)})`
+            ).catch(err => logErr("icon-push:exec", err));
+        }
+    } catch (err) {
+        logErr("icon-push", err);
+    }
+}
+
 // Re-push the configured font to every idle pool window. Called once ensureFontCached
 // resolves, since any window warmed before the download finished is holding "".
 function refreshPoolFonts(): void {
@@ -1146,16 +1199,37 @@ function createPoolWindow(): BrowserWindow {
     return w;
 }
 
-function warmPool(): void {
-    const target = targetPoolSize();
-    while (windowPool.length < target) {
+// Tops the pool back up to targetPoolSize() one window per timer tick - never in a
+// synchronous loop, and never on a toast's critical path. new BrowserWindow() is
+// synchronous and was measured at 100-210 ms of main-process time per window, during
+// which nothing else in Discord's main process runs; coalesce timers were observed
+// firing up to ~290 ms late because of it. The old loop built the entire pool back
+// to back at startup, and refilled inside acquireWindow before the toast was shown.
+// Now each create is its own timer callback, REFILL_GAP_MS apart, so IPC replies,
+// timers and Discord's own work get to run in between.
+let refillTimer: ReturnType<typeof setTimeout> | null = null;
+const REFILL_GAP_MS = 50;
+
+function warmPool(delayMs = 0): void {
+    if (refillTimer !== null) return;
+    refillTimer = setTimeout(() => {
+        refillTimer = null;
+        // Plugin stopped since this was scheduled. Creating a window now would leak it,
+        // because stopMainProcessPatch has already drained the pool.
+        if (!mainToastConfig) return;
+        const target = targetPoolSize();
+        if (windowPool.length >= target) return;
+        const t = performance.now();
         windowPool.push(createPoolWindow());
-    }
+        if (debugEnabled) logDiag("pool", `refill +1 in ${(performance.now() - t).toFixed(1)}ms (size ${windowPool.length}/${target})`);
+        if (windowPool.length < target) warmPool(REFILL_GAP_MS);
+    }, delayMs);
 }
 
 // Diagnostic split of acquireWindow's cost, read back by showToastInternal's
-// toast.show line. `create` is the synchronous warmPool() refill - new BrowserWindow()
-// spawns a renderer process and blocks the main process while it does. `ready` is the
+// toast.show line. `create` is any window the acquire had to create synchronously;
+// since the refill moved to after show that is only the pool-MISS path, so it should
+// normally read 0. `ready` is the
 // await on the handed-out window's loadURL. Only populated while npDebug is on; the
 // performance.now() marks themselves stay unconditional for the same toggle-race
 // reason as showToastInternal's.
@@ -1185,15 +1259,14 @@ async function acquireWindow(): Promise<BrowserWindow> {
             // when already at target), so the only added cost is `new BrowserWindow()`
             // for as many slots as were consumed since the last warmPool — typically 1.
             //
-            // The refilled window lands at the BACK of the array. With FIFO ordering it
-            // is not handed out until every older window ahead of it has been used, so
-            // it has a whole pool's worth of toasts to finish loadURL. In steady state
-            // the window handed out here loaded long ago and the await resolves at once.
-            const tCreate = performance.now();
-            warmPool();
+            // No refill here: showToastInternal calls warmPool() once the toast is on
+            // screen, and warmPool spaces its creates out on a timer. The refilled
+            // window lands at the BACK of the array, and with FIFO ordering it is not
+            // handed out until every older window ahead of it has been used, so it has
+            // a whole pool's worth of toasts to finish loadURL.
             const tReady = performance.now();
             await poolReady.get(w);
-            recordAcquireTiming(w, tCreate, tReady);
+            recordAcquireTiming(w, tReady, tReady);
             return w;
         }
     }
@@ -1202,8 +1275,9 @@ async function acquireWindow(): Promise<BrowserWindow> {
     // diagnostics, the user may want to raise `Pool minimum size` so the floor exceeds
     // their typical burst length.
     if (debugEnabled) logDiag("pool", `MISS — cold-create (target=${targetPoolSize()})`);
+    // The one window this toast needs has to be created synchronously - there is
+    // nothing else to hand out. The rest of the pool is refilled after show.
     const tCreate = performance.now();
-    warmPool();
     const w = createPoolWindow();
     const tReady = performance.now();
     await poolReady.get(w);
@@ -1664,5 +1738,6 @@ export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
         displayListenersBound = false;
     }
     displayCache = null;
+    if (refillTimer !== null) { clearTimeout(refillTimer); refillTimer = null; }
     drainPool();
 }
