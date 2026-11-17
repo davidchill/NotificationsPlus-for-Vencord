@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.4.3`
+`0.4.4`
 
 ## Install
 
@@ -15,8 +15,10 @@ NotificationsPlus is a **userplugin**. Userplugins are compiled into the Vencord
 
    ```
    pnpm i
-   pnpm build
+   pnpm buildStandalone
    ```
+
+   Use `buildStandalone`, not `build`. A plain `pnpm build` produces a patcher that silently fails to load with current Discord versions.
 
 3. Fully quit Discord — tray icon -> Quit, not just closing the window — then patch it:
 
@@ -26,7 +28,7 @@ NotificationsPlus is a **userplugin**. Userplugins are compiled into the Vencord
 
 4. Relaunch Discord. The plugin appears in Vencord Settings -> Plugins as **NotificationsPlus**.
 
-After editing plugin source, re-run `pnpm build` and fully restart Discord. `pnpm inject` only needs to be run once.
+After editing plugin source, re-run `pnpm buildStandalone` and fully restart Discord. `pnpm inject` only needs to be run once.
 
 ### Important: do not use the standalone Vencord Installer
 

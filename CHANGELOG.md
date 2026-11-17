@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.4.4 — 2026-11-17
+
+A type-only patch: the plugin now type-checks with 0 errors against the installed Vencord version. The settings panel renders exactly as before.
+
+### Fixed
+
+- **`Forms.FormDivider` type errors** — `index.tsx` used `<Forms.FormDivider />` twice in the settings panel, as section separators before "Custom Toast Notifications" and before "Diagnostics". On this Vencord version, `Forms.FormDivider` is kept only for backwards compatibility. It is declared `Divider as never` and marked `@deprecated use @components/Divider`, so `tsc` reported `TS2604: JSX element type 'Forms.FormDivider' does not have any construct or call signatures` at both call sites. Both now render `Divider`, imported from `@components/Divider`. That is the same component `Forms.FormDivider` pointed to at runtime, so the output is the identical `<hr class="vc-divider">`. The errors never affected the running plugin, because esbuild strips types without checking them.
+
+### Changed
+
+- **README install steps use `pnpm buildStandalone`** — the Install section and the "after editing plugin source" note said `pnpm build`, which produces a patcher that silently fails to load with current Discord. They now say `pnpm buildStandalone`, matching the other userplugins in this setup.
+
+### Bundle checklist (this release)
+- `index.tsx` — `Divider` imported from `@components/Divider`; both `<Forms.FormDivider />` replaced with `<Divider />`
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump, `pnpm build` → `pnpm buildStandalone` in the Install section and the rebuild note
+
 ## v0.4.3 — 2026-11-17
 
 Toast windows are now reused instead of destroyed. v0.4.2 took window creation off the show path, but every notification still created, and later destroyed, a whole `BrowserWindow`: a Chromium renderer process costing 88–210 ms of synchronous main-process time to create and roughly 25 MB while alive. That was the last per-toast cost left in the pipeline. A finished toast now paints a blank frame, hides, and goes back to the pool, and the next toast just sends it new content. In steady state no window is created or destroyed at all. This build has run live since 2026-09-24: 91 windows parked for reuse, up to 20 uses on a single window, no blank-frame timeouts and no errors.

@@ -8,6 +8,7 @@ import "./style.css";
 
 import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
+import { Divider } from "@components/Divider";
 import { Switch } from "@components/Switch";
 import { findStoreLazy } from "@webpack";
 import { PluginNative } from "@utils/types";
@@ -431,7 +432,7 @@ function SettingsPanel() {
                 </Grid>
             </div>
 
-            <Forms.FormDivider />
+            <Divider />
 
             {/* ── CUSTOM TOAST ── */}
             <div>
@@ -685,7 +686,7 @@ function SettingsPanel() {
                 )}
             </div>
 
-            <Forms.FormDivider />
+            <Divider />
 
             <div>
                 <Forms.FormTitle tag="h4">Diagnostics</Forms.FormTitle>
