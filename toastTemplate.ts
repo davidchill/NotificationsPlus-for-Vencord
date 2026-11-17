@@ -91,7 +91,12 @@ window.__npFont=function(css){var fs=document.getElementById('fs');if(fs)fs.text
 // Late avatar, pushed after show when the read missed the first paint (__npIcon is the
 // preload-less fallback for native.ts's pushLateIcon). Empty string = read failed.
 window.__npIcon=function(icon){var iw=document.getElementById('iw');if(!iw)return;if(!icon){iw.innerHTML=SVG;return;}var img=document.createElement('img');img.className='icon late';img.src=icon;img.onerror=function(){iw.innerHTML=SVG;};iw.innerHTML='';iw.appendChild(img);};
+// Blank the toast before its window is hidden for reuse. Resolves after two animation
+// frames, once a blank frame has been produced, so the next toast can't flash this one.
+window.__npRetire=function(){document.body.style.visibility='hidden';return new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(function(){r(1);});});});};
 window.__npUpdate=function(d){
+  // Undo __npRetire: a reused window's body was hidden when its previous toast ended.
+  document.body.style.visibility='';
   var R=document.documentElement.style;
   R.setProperty('--ar',d.ar);R.setProperty('--ag',d.ag);R.setProperty('--ab',d.ab);
   R.setProperty('--ts',d.ts+'px');R.setProperty('--cs',d.cs+'px');R.setProperty('--bs',d.bs+'px');
@@ -128,12 +133,15 @@ window.__npUpdate=function(d){
   var bar=document.getElementById('bar');
   bar.className='bar';if(d.barMs>0){void bar.offsetWidth;bar.className='bar run';}
   t.className='toast';
-  t.onclick=function(){t.classList.add('exiting');setTimeout(function(){d.clk?location.href='vc-np://click':window.close();},120);};
-  t.oncontextmenu=function(){t.classList.add('exiting');setTimeout(window.close,120);};
+  // Dismissal goes through main (vc-np://dismiss) so the window is reused, not closed.
+  t.onclick=function(){t.classList.add('exiting');setTimeout(function(){location.href=d.clk?'vc-np://click':'vc-np://dismiss';},120);};
+  t.oncontextmenu=function(){t.classList.add('exiting');setTimeout(function(){location.href='vc-np://dismiss';},120);};
   // rAF defers the animation class until after win.show() — ensures animation begins from first visible frame
   requestAnimationFrame(function(){void t.offsetWidth;t.className='toast '+(d.ent==='slide'?'anim-slide':'anim-fade');});
   setTimeout(function(){if(bd.scrollHeight>bd.clientHeight)bd.classList.add('clipped');},0);
-  return document.documentElement.scrollHeight;
+  // Measure the toast, not the document: documentElement.scrollHeight never reports less
+  // than the window's current height, which for a reused window is the previous toast's.
+  return t.offsetHeight;
 };
 </script></body></html>`;
 
@@ -152,6 +160,8 @@ const SVG = ${JSON.stringify(DISCORD_SVG)};
 const FSVG = ${JSON.stringify(FRIEND_SVG)};
 
 function applyUpdate(d) {
+  // Undo applyRetire: a reused window's body was hidden when its previous toast ended.
+  document.body.style.visibility = "";
   const R = document.documentElement.style;
   R.setProperty("--ar", d.ar);
   R.setProperty("--ag", d.ag);
@@ -210,17 +220,20 @@ function applyUpdate(d) {
   if (d.barMs > 0) { void bar.offsetWidth; bar.className = "bar run"; }
   t.className = "toast";
   const clk = !!d.clk;
+  // Dismissal goes through main (vc-np://dismiss) so the window is reused, not closed.
   t.onclick = function () {
     t.classList.add("exiting");
-    setTimeout(function () { clk ? (location.href = "vc-np://click") : window.close(); }, 120);
+    setTimeout(function () { location.href = clk ? "vc-np://click" : "vc-np://dismiss"; }, 120);
   };
   t.oncontextmenu = function () {
     t.classList.add("exiting");
-    setTimeout(window.close, 120);
+    setTimeout(function () { location.href = "vc-np://dismiss"; }, 120);
   };
   requestAnimationFrame(function () { void t.offsetWidth; t.className = "toast " + (d.ent === "slide" ? "anim-slide" : "anim-fade"); });
   setTimeout(function () { if (bd.scrollHeight > bd.clientHeight) bd.classList.add("clipped"); }, 0);
-  return document.documentElement.scrollHeight;
+  // Measure the toast, not the document: documentElement.scrollHeight never reports less
+  // than the window's current height, which for a reused window is the previous toast's.
+  return t.offsetHeight;
 }
 
 // Late avatar, sent on np:icon once the toast is already on screen, when the avatar
@@ -246,6 +259,17 @@ function applyFont(css) {
   if (fs) fs.textContent = css || "";
 }
 
+// Blank the toast before main hides its window for reuse, then confirm once a blank
+// frame has really been produced (two animation frames), so the next toast to use this
+// window can't flash this one's content when shown. No reply on failure: main times out
+// and destroys the window instead of reusing it.
+function applyRetire(reply) {
+  document.body.style.visibility = "hidden";
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () { ipcRenderer.send(reply); });
+  });
+}
+
 function applyCloseAnim() {
   const t = document.querySelector(".toast");
   if (t) t.classList.add("timeout-exit");
@@ -259,6 +283,7 @@ function register() {
   });
   ipcRenderer.on("np:font", function (_e, css) { try { applyFont(css); } catch (e) {} });
   ipcRenderer.on("np:icon", function (_e, icon) { try { applyIcon(icon); } catch (e) {} });
+  ipcRenderer.on("np:retire", function (_e, reply) { try { applyRetire(reply); } catch (e) {} });
   ipcRenderer.on("np:close-animate", function () { try { applyCloseAnim(); } catch (e) {} });
 }
 

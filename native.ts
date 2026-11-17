@@ -704,7 +704,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
         if (oldestIdx === -1) break;
         const oldest = stack[oldestIdx];
         stack.splice(oldestIdx, 1);
-        if (!oldest.win.isDestroyed()) oldest.win.close();
+        retireToast(oldest.win);
         fullCount--;
         if (debugEnabled) logDiag("evict", `key=${toastKey} isDM=${isDM} ageMs=${Math.round(Date.now() - oldest.addedAt)}`);
 
@@ -773,21 +773,26 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     const resolvedIcon = iconReady ?? "";
 
     const entry: StackEntry = { win, h: TOAST_MIN_H, isGroup: false, addedAt: Date.now() };
-    stack.unshift(entry);
+    // Re-resolve the stack instead of reusing the array fetched at the top. An eviction
+    // above now retires its window synchronously, and if that emptied the stack, its
+    // array was dropped from toastStacks (e.g. with Max stacked toasts = 1). Unshifting
+    // into the stale array would leave this toast untracked.
+    let liveStack = toastStacks.get(toastKey);
+    if (!liveStack) {
+        liveStack = [];
+        toastStacks.set(toastKey, liveStack);
+    }
+    liveStack.unshift(entry);
 
-    win.on("closed", () => {
-        pendingMoves.delete(win);
-        const s = toastStacks.get(toastKey);
-        if (s) {
-            const idx = s.findIndex(e => e.win === win);
-            if (idx !== -1) s.splice(idx, 1);
-            if (s.length === 0) {
-                toastStacks.delete(toastKey);
-                evictedCounts.delete(toastKey);
-            }
-        }
-        scheduleReposition(toastKey, bounds, isBottom, isRight, offsetX, offsetY);
-    });
+    // This toast's claim on the window, registered before the next await so every late
+    // callback below can tell whether the window still belongs to this toast. Cleanup when
+    // the toast ends is retireToast's job, or the window's persistent "closed" listener if
+    // it is destroyed outright, not a per-toast listener.
+    const use: ToastUse = {
+        toastKey, bounds, isBottom, isRight, offsetX, offsetY,
+        onClicked, closeTimer: null,
+    };
+    activeUse.set(win, use);
 
     // Font CSS is pushed per-window (see pushFontIfStale), never per-toast. This is a
     // no-op in steady state - it only does work when this window was warmed before the
@@ -810,6 +815,10 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     const measuredH = Math.max(TOAST_MIN_H, Math.min(contentH, TOAST_MAX_H));
 
     entry.h = measuredH;
+    // The toast may have ended while its content was being sent (evicted by a newer
+    // arrival, or the plugin stopped). With reuse, its window may already be parked or even
+    // showing a different toast, so only continue if this use still owns it.
+    if (activeUse.get(win) !== use) return -1;
     if (!win.isDestroyed()) {
         // Position the NEW toast at its exact slot immediately so it appears at the
         // correct position with no post-show correction jump. Since unshift puts it at
@@ -845,7 +854,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     const tShown = performance.now();
     if (iconPending) {
         iconPromise.then(icon => {
-            if (win.isDestroyed()) return;
+            if (win.isDestroyed() || activeUse.get(win) !== use) return;
             pushLateIcon(win, icon);
             if (debugEnabled) {
                 logDiag("toast.icon",
@@ -856,28 +865,10 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
     }
     warmPool();
 
-    // Handle all vc-np:// navigations: toast click and "Open Link" button.
-    win.webContents.on("will-navigate", (event, url) => {
-        if (!url.startsWith("vc-np://")) return;
-        event.preventDefault();
-        if (url.startsWith("vc-np://click")) {
-            if (!win.isDestroyed()) win.close();
-            onClicked?.();
-        } else if (url.startsWith("vc-np://open-link/")) {
-            if (!win.isDestroyed()) win.close();
-            try {
-                const targetUrl = decodeURIComponent(url.slice("vc-np://open-link/".length));
-                shell.openExternal(targetUrl);
-            } catch (err) {
-                logErr("open-link", err);
-            }
-        }
-    });
-
+    // Clicks, dismissals and Open Link arrive as vc-np:// navigations, handled by the
+    // window's persistent will-navigate listener (createPoolWindow -> onToastNavigate).
     if (effectiveDuration > 0) {
-        setTimeout(() => {
-            closeWithAnimation(win);
-        }, effectiveDuration * 1000);
+        use.closeTimer = setTimeout(() => closeWithAnimation(win, use), effectiveDuration * 1000);
     }
 
     const tEnd = performance.now();
@@ -897,7 +888,7 @@ async function showToastInternal(options: ToastOptions, onClicked?: () => void):
             `ready=${at ? at.ready.toFixed(1) : "?"}] icon=${iconPending ? "late" : (tIcon - tPre).toFixed(1) + "ms"} ` +
             `update=${(tUpdate - tAcquire).toFixed(1)}ms ` +
             `tail=${(tEnd - tUpdate).toFixed(1)}ms total=${(tEnd - t0).toFixed(1)}ms ` +
-            `measuredH=${measuredH}`);
+            `measuredH=${measuredH} uses=${useCount.get(win) ?? 0}`);
     }
 
     return win.id;
@@ -1078,6 +1069,47 @@ const POOL_MAX = 16;
 const POOL_BUFFER = 2;
 const windowPool: BrowserWindow[] = [];
 
+// -- Window reuse ----------------------------------------------------------------
+//
+// Toast windows are reused, not destroyed. Until v0.4.3 every toast closed its window when
+// it ended, so each notification created and destroyed a whole Chromium renderer process
+// (88-210 ms of main-process time to create, ~25 MB each) - the last per-toast cost left
+// in the pipeline. A finished toast now paints a blank frame, hides, and goes back to the
+// pool, and the next toast just sends it new content.
+//
+// Accounting: windowPool holds idle windows; liveWindows holds windows handed to a toast
+// and not yet parked again (showing, or mid-retire). targetPoolSize() caps the TOTAL of
+// the two, so in steady state no window is created or destroyed at all.
+const liveWindows = new Set<BrowserWindow>();
+
+// One object per use of a window. Everything that can fire late - the auto-close timer,
+// the fade-out timer, the late avatar, a click - checks activeUse.get(win) === use before
+// acting, so a callback left over from a previous toast can never touch the toast now
+// showing in the same window.
+interface ToastUse {
+    toastKey: string;
+    bounds: { x: number; y: number; width: number; height: number; };
+    isBottom: boolean;
+    isRight: boolean;
+    offsetX: number;
+    offsetY: number;
+    onClicked?: () => void;
+    closeTimer: ReturnType<typeof setTimeout> | null;
+}
+const activeUse = new WeakMap<BrowserWindow, ToastUse>();
+
+// Uses before a window is replaced with a fresh one. Bounds any slow memory growth in a
+// long-lived renderer (Discord often runs for days) at the cost of one window creation
+// per MAX_USES_PER_WINDOW toasts instead of one per toast.
+const MAX_USES_PER_WINDOW = 100;
+const useCount = new WeakMap<BrowserWindow, number>();
+
+// How long a retiring toast waits for its renderer to confirm it painted a blank frame.
+// A renderer that misses it is treated as unhealthy and destroyed rather than reused.
+const RETIRE_TIMEOUT_MS = 250;
+
+// Target number of toast windows in existence: idle in windowPool plus in use in
+// liveWindows (the total, since windows are reused rather than destroyed).
 // Auto-size the pool to (stackSize + dmGroupThreshold + POOL_BUFFER) so worst-case
 // concurrent server + DM activity has buffers ready. Falls back to the user's poolMin
 // (or POOL_MIN_DEFAULT pre-handshake) when no config is known yet. Final value is
@@ -1196,6 +1228,32 @@ function createPoolWindow(): BrowserWindow {
     // Inject the font as soon as the shell is up, so the CSSOM reparse happens here
     // in the background instead of on the show path of whichever toast claims it.
     ready.then(() => pushFontIfStale(w, mainToastConfig?.font ?? "")).catch(() => {});
+    // Listeners are attached once per window, not once per toast: a reused window would
+    // otherwise pick up another set on every use. Per-toast state lives in activeUse.
+    //
+    // Every navigation is blocked. The template must never be replaced, since the window
+    // is reused; the toast's actions arrive as vc-np:// URLs and are dispatched here.
+    w.webContents.on("will-navigate", (event, url) => {
+        event.preventDefault();
+        onToastNavigate(w, url);
+    });
+    w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    // A crashed renderer can't be reused. Destroying it runs the "closed" cleanup below.
+    w.webContents.on("render-process-gone", () => { if (!w.isDestroyed()) w.destroy(); });
+    // Real destruction: a crash, plugin stop, or parkWindow discarding the window. Remove
+    // it from wherever it is tracked.
+    w.on("closed", () => {
+        pendingMoves.delete(w);
+        const i = windowPool.indexOf(w);
+        if (i !== -1) windowPool.splice(i, 1);
+        const use = activeUse.get(w);
+        if (use) {
+            activeUse.delete(w);
+            if (use.closeTimer !== null) clearTimeout(use.closeTimer);
+            detachFromStack(w, use);
+        }
+        liveWindows.delete(w);
+    });
     return w;
 }
 
@@ -1218,11 +1276,11 @@ function warmPool(delayMs = 0): void {
         // because stopMainProcessPatch has already drained the pool.
         if (!mainToastConfig) return;
         const target = targetPoolSize();
-        if (windowPool.length >= target) return;
+        if (windowPool.length + liveWindows.size >= target) return;
         const t = performance.now();
         windowPool.push(createPoolWindow());
-        if (debugEnabled) logDiag("pool", `refill +1 in ${(performance.now() - t).toFixed(1)}ms (size ${windowPool.length}/${target})`);
-        if (windowPool.length < target) warmPool(REFILL_GAP_MS);
+        if (debugEnabled) logDiag("pool", `refill +1 in ${(performance.now() - t).toFixed(1)}ms (idle ${windowPool.length} + live ${liveWindows.size} / ${target})`);
+        if (windowPool.length + liveWindows.size < target) warmPool(REFILL_GAP_MS);
     }, delayMs);
 }
 
@@ -1251,19 +1309,12 @@ async function acquireWindow(): Promise<BrowserWindow> {
         // O(n), but n is capped at POOL_MAX (16), so the cost is irrelevant.
         const w = windowPool.shift()!;
         if (!w.isDestroyed()) {
-            // Synchronous refill — replaces the previous `process.nextTick(warmPool)`.
-            // Under burst, multiple acquireWindow calls run interleaved at their await
-            // points; with deferred refill, several could see an empty pool before any
-            // nextTick fires. Synchronous refill guarantees the pool array is back to
-            // target before this acquire's await yields. warmPool is idempotent (no-op
-            // when already at target), so the only added cost is `new BrowserWindow()`
-            // for as many slots as were consumed since the last warmPool — typically 1.
-            //
-            // No refill here: showToastInternal calls warmPool() once the toast is on
-            // screen, and warmPool spaces its creates out on a timer. The refilled
-            // window lands at the BACK of the array, and with FIFO ordering it is not
-            // handed out until every older window ahead of it has been used, so it has
-            // a whole pool's worth of toasts to finish loadURL.
+            // Registered as live BEFORE the await, so warmPool - which counts idle + live
+            // against the target - can't mistake this window for a missing one.
+            liveWindows.add(w);
+            useCount.set(w, (useCount.get(w) ?? 0) + 1);
+            // No refill here. With window reuse this window returns to the pool when its
+            // toast ends, so the warmPool() call after show is a no-op in steady state.
             const tReady = performance.now();
             await poolReady.get(w);
             recordAcquireTiming(w, tReady, tReady);
@@ -1279,6 +1330,8 @@ async function acquireWindow(): Promise<BrowserWindow> {
     // nothing else to hand out. The rest of the pool is refilled after show.
     const tCreate = performance.now();
     const w = createPoolWindow();
+    liveWindows.add(w);
+    useCount.set(w, 1);
     const tReady = performance.now();
     await poolReady.get(w);
     recordAcquireTiming(w, tCreate, tReady);
@@ -1292,6 +1345,16 @@ function drainPool(): void {
     windowPool.length = 0;
 }
 
+// Destroy idle windows beyond the target, e.g. after the stack caps or the pool floor are
+// lowered. Newest idle first, so the longest-warm windows are the ones kept.
+function trimPool(): void {
+    const target = targetPoolSize();
+    while (windowPool.length > 0 && windowPool.length + liveWindows.size > target) {
+        const w = windowPool.pop()!;
+        if (!w.isDestroyed()) w.destroy();
+    }
+}
+
 // Monotonic counter for unique reply channel names — two toasts on the same pool
 // window in the same millisecond would otherwise collide on Date.now() alone.
 let replySeq = 0;
@@ -1299,7 +1362,7 @@ let replySeq = 0;
 // Push toast content to a pool window. Prefers IPC (preload) which uses Electron's
 // structured clone — avoids the V8 parse+eval cost of executeJavaScript and is type-safe
 // across the boundary. Falls back to executeJavaScript if the preload write failed at startup.
-// Returns the measured scrollHeight so callers can size the window before showing.
+// Returns the measured toast height so callers can size the window before showing.
 async function sendToastUpdate(win: BrowserWindow, data: UpdateData): Promise<number> {
     if (preloadPath) {
         const replyCh = `np:measured-${win.webContents.id}-${++replySeq}`;
@@ -1400,8 +1463,10 @@ function animateWindowTo(win: BrowserWindow, x: number, y: number, w: number, h:
     if (animTicker === null) animTicker = setInterval(tickAnimations, ANIM_TICK_MS);
 }
 
-function closeWithAnimation(win: BrowserWindow, delayMs = 150) {
-    if (win.isDestroyed()) return;
+// Timer-expired close: fade the toast out, then retire it. The fade timer is kept on the
+// use, so a click or eviction during the fade cancels it instead of retiring twice.
+function closeWithAnimation(win: BrowserWindow, use: ToastUse, delayMs = 150) {
+    if (win.isDestroyed() || activeUse.get(win) !== use) return;
     if (preloadPath) {
         try { win.webContents.send("np:close-animate"); } catch (err) { logErr("close-animate:send", err); }
     } else {
@@ -1409,7 +1474,115 @@ function closeWithAnimation(win: BrowserWindow, delayMs = 150) {
             "var t=document.querySelector('.toast');if(t)t.classList.add('timeout-exit')"
         ).catch(err => logErr("close-animate:exec", err));
     }
-    setTimeout(() => { if (!win.isDestroyed()) win.close(); }, delayMs);
+    use.closeTimer = setTimeout(() => retireToast(win, use), delayMs);
+}
+
+// End a toast's use of its window: leave the stack so the others close the gap, then
+// blank, hide, and return the window to the pool. Replaces win.close() everywhere a toast
+// used to end: auto-close, click, dismiss, Open Link, and eviction.
+function retireToast(win: BrowserWindow, use?: ToastUse): void {
+    const u = use ?? activeUse.get(win);
+    if (!u || activeUse.get(win) !== u) return;
+    // From here on, every late callback belonging to this use is a no-op.
+    activeUse.delete(win);
+    if (u.closeTimer !== null) { clearTimeout(u.closeTimer); u.closeTimer = null; }
+    detachFromStack(win, u);
+    blankThenPark(win);
+}
+
+// Remove a window from its stack and let the rest of the stack close the gap. This is
+// what each toast's own "closed" listener did before windows were reused.
+function detachFromStack(win: BrowserWindow, use: ToastUse): void {
+    pendingMoves.delete(win);
+    const s = toastStacks.get(use.toastKey);
+    if (s) {
+        const i = s.findIndex(e => e.win === win);
+        if (i !== -1) s.splice(i, 1);
+        if (s.length === 0) {
+            toastStacks.delete(use.toastKey);
+            evictedCounts.delete(use.toastKey);
+        }
+    }
+    scheduleReposition(use.toastKey, use.bounds, use.isBottom, use.isRight, use.offsetX, use.offsetY);
+}
+
+// Make sure the window's last painted frame is an empty one before it is hidden. A
+// hidden window keeps its last frame, so without this the next toast to reuse it could
+// flash the old toast's content for a frame when shown. The renderer hides its body and
+// replies after two animation frames, i.e. once a blank frame has really been produced.
+// A window that was never shown (retired between acquire and show) has nothing on
+// screen and parks straight away.
+function blankThenPark(win: BrowserWindow): void {
+    if (win.isDestroyed()) { liveWindows.delete(win); return; }
+    if (!win.isVisible()) { parkWindow(win, true); return; }
+    let done = false;
+    let replyCh = "";
+    const finish = (healthy: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (replyCh) ipcMain.removeAllListeners(replyCh);
+        parkWindow(win, healthy);
+    };
+    const timer = setTimeout(() => finish(false), RETIRE_TIMEOUT_MS);
+    try {
+        if (preloadPath) {
+            replyCh = `np:retired-${win.webContents.id}-${++replySeq}`;
+            ipcMain.once(replyCh, () => finish(true));
+            win.webContents.send("np:retire", replyCh);
+        } else {
+            win.webContents.executeJavaScript("window.__npRetire?window.__npRetire():0")
+                .then(() => finish(true), () => finish(false));
+        }
+    } catch {
+        finish(false);
+    }
+}
+
+// Hide the window and return it to the pool, or destroy it if it is unhealthy, has hit
+// MAX_USES_PER_WINDOW, the pool is already at target, or the plugin has stopped.
+// warmPool() then replaces a destroyed window off the critical path if one is needed.
+function parkWindow(win: BrowserWindow, healthy: boolean): void {
+    liveWindows.delete(win);
+    pendingMoves.delete(win);
+    if (win.isDestroyed()) return;
+    win.hide();
+    const uses = useCount.get(win) ?? 0;
+    const target = targetPoolSize();
+    const keep = healthy && mainToastConfig !== null && uses < MAX_USES_PER_WINDOW
+        && windowPool.length + liveWindows.size < target;
+    if (keep) {
+        windowPool.push(win);
+    } else {
+        win.destroy();
+        if (mainToastConfig) warmPool();
+    }
+    if (debugEnabled) {
+        logDiag("pool", `${keep ? "park" : "discard"} uses=${uses}${healthy ? "" : " (renderer did not confirm a blank frame)"} ` +
+            `(idle ${windowPool.length} + live ${liveWindows.size} / ${target})`);
+    }
+}
+
+// The toast's vc-np:// actions. Every navigation was already blocked by the caller; a
+// navigation arriving after its toast has ended is ignored.
+function onToastNavigate(win: BrowserWindow, url: string): void {
+    if (!url.startsWith("vc-np://")) return;
+    const use = activeUse.get(win);
+    if (!use) return;
+    if (url.startsWith("vc-np://click")) {
+        retireToast(win, use);
+        use.onClicked?.();
+    } else if (url.startsWith("vc-np://dismiss")) {
+        retireToast(win, use);
+    } else if (url.startsWith("vc-np://open-link/")) {
+        retireToast(win, use);
+        try {
+            const targetUrl = decodeURIComponent(url.slice("vc-np://open-link/".length));
+            shell.openExternal(targetUrl);
+        } catch (err) {
+            logErr("open-link", err);
+        }
+    }
 }
 
 const pendingReposition = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1701,7 +1874,8 @@ export function updateMainProcessPatch(_: IpcMainInvokeEvent, config: ToastConfi
     // longer matches user intent.
     if (wasCoalescing && config.coalesceWindowMs === 0) flushAllCoalesceBuffers();
     // Settings change may raise stack/group caps — top up the pool if needed.
-    setImmediate(() => warmPool());
+    // Lowered caps shrink the target: drop surplus idle windows before topping up.
+    setImmediate(() => { trimPool(); warmPool(); });
     // Font may have changed - refreshPoolFonts re-pushes to already-warm pool windows
     // so they aren't left rendering the previous font.
     ensureFontCached(config.font).then(refreshPoolFonts).catch(() => {});
@@ -1717,6 +1891,9 @@ export function stopMainProcessPatch(_: IpcMainInvokeEvent): void {
         for (const entry of stack) { if (!entry.win.isDestroyed()) entry.win.close(); }
     }
     toastStacks.clear();
+    // Windows mid-retire are in neither a stack nor the pool; destroy those too.
+    for (const w of liveWindows) { if (!w.isDestroyed()) w.destroy(); }
+    liveWindows.clear();
     evictedCounts.clear();
     fontCache.clear();
     iconCache.clear();
