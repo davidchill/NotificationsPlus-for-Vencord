@@ -4,13 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { app, BrowserWindow, ipcMain, net, Notification as ElectronNotification, screen, shell } from "electron";
-import type { IpcMainInvokeEvent, WebContents } from "electron";
+import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent, net, Notification as ElectronNotification, screen, shell, type WebContents } from "electron";
 import { writeFileSync } from "fs";
 import { join } from "path";
 
 import {
-    DISCORD_SVG,
     GROUP_H,
     PRELOAD_SRC,
     TEMPLATE_HTML,
@@ -119,7 +117,6 @@ export function setDebug(_: IpcMainInvokeEvent, enabled: boolean): void {
 // for the same reason as logErr: never recurse on a forwarding failure.
 function logDiag(scope: string, msg: string): void {
     if (!debugEnabled) return;
-    // eslint-disable-next-line no-console
     console.log(`[NotificationsPlus:${scope}]`, msg);
     if (senderWebContents && !senderWebContents.isDestroyed()) {
         const tag = JSON.stringify(`[NotificationsPlus:${scope}]`);
@@ -134,7 +131,6 @@ function logErr(scope: string, err: unknown): void {
     const stack = err instanceof Error && err.stack ? err.stack : "";
 
     // Main-process console — visible if Discord was launched from a terminal.
-    // eslint-disable-next-line no-console
     console.warn(`[NotificationsPlus:${scope}]`, msg, stack ? `\n${stack}` : "");
 
     // Forward to Discord's renderer devtools (Ctrl+Shift+I → Console). This is the
@@ -561,7 +557,7 @@ export function getDisplays(_: IpcMainInvokeEvent): DisplayInfo[] {
 function buildGroupHtml(count: number, isDM: boolean, font: string, channelSize: number): string {
     const accent = isDM ? "#23a55a" : "#5865f2";
     const border = isDM ? "rgba(35,165,90,.35)" : "rgba(88,101,242,.35)";
-    const hover  = isDM ? "rgba(35,165,90,.12)" : "rgba(88,101,242,.12)";
+    const hover = isDM ? "rgba(35,165,90,.12)" : "rgba(88,101,242,.12)";
     const plural = count !== 1 ? "s" : "";
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1704,14 +1700,14 @@ function emitToast(
                 const cId = JSON.stringify(navData.channelId);
                 const mId = JSON.stringify(navData.messageId);
                 senderWebContents.executeJavaScript(
-                    `(function(){try{` +
+                    "(function(){try{" +
                     // Reuse the cached module if a prior lookup found it; only search (and
                     // cache) when it's not yet set, so this doesn't re-walk the module cache
                     // on every click. Shares window.__npJumpMod with index.tsx's helper.
-                    `var m=window.__npJumpMod;` +
-                    `if(!m){m=window?.Vencord?.Webpack?.findByProps?.("jumpToMessage");if(m)window.__npJumpMod=m;}` +
+                    "var m=window.__npJumpMod;" +
+                    'if(!m){m=window?.Vencord?.Webpack?.findByProps?.("jumpToMessage");if(m)window.__npJumpMod=m;}' +
                     `m?.jumpToMessage?.({channelId:${cId},messageId:${mId},flash:true});` +
-                    `}catch(e){}})();`
+                    "}catch(e){}})();"
                 ).catch(err => logErr("jump-to-message", err));
             } else {
                 const t = JSON.stringify(rawTitle);

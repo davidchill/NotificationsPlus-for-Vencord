@@ -10,9 +10,8 @@ import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
 import { Divider } from "@components/Divider";
 import { Switch } from "@components/Switch";
+import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findStoreLazy } from "@webpack";
-import { PluginNative } from "@utils/types";
-import definePlugin, { OptionType } from "@utils/types";
 import { Button, FluxDispatcher, Forms, React, Select, TextInput } from "@webpack/common";
 
 import type { DisplayInfo, ToastConfig, ToastOptions } from "./native";
@@ -605,13 +604,13 @@ function SettingsPanel() {
 
                 <SubHeader>Content</SubHeader>
                 <Grid>
-                    <Cell label='Title template — use {title}'>
+                    <Cell label="Title template — use {title}">
                         <TextInput
                             value={s.toastTitleTemplate}
                             onChange={v => set("toastTitleTemplate", v, updateToast)}
                         />
                     </Cell>
-                    <Cell label='Body template — use {body}'>
+                    <Cell label="Body template — use {body}">
                         <TextInput
                             value={s.toastBodyTemplate}
                             onChange={v => set("toastBodyTemplate", v, updateToast)}

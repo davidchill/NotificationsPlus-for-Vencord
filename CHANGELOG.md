@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.4.5 — 2026-11-17
+
+A lint-only patch: the plugin now passes Vencord's ESLint config with 0 errors and 0 warnings, down from 14 errors and 2 warnings, and still type-checks with 0 errors. Behaviour is unchanged. Compiled with esbuild, `native.ts` and `toastTemplate.ts` produce output identical to v0.4.4, and all 9 `toastTemplate.ts` exports are byte-identical: the template HTML, the preload source, both SVGs and the dimension constants. `index.tsx` compiles to the same 56 statements, with two imports in a different order. Neither is a side-effect import, and both are Vencord core modules that load before any plugin.
+
+### Changed
+
+- **Duplicate imports merged** — `native.ts` imported from `electron` twice: once for values and once with `import type`. That is now one statement with inline `type` specifiers (`type IpcMainInvokeEvent`, `type WebContents`), the form Vencord's own code uses. `index.tsx` imported from `@utils/types` twice. That is now `import definePlugin, { OptionType, PluginNative } from "@utils/types"`, which `simple-import-sort` places before `@webpack`. The `./style.css` side-effect import stays first.
+- **Unused `DISCORD_SVG` import removed from `native.ts`** — it was imported but never referenced. `toastTemplate.ts` still exports it and uses it itself, in the preload script and in the `__npUpdate` fallback, so the toast icon is unaffected.
+- **Quote style** — `@stylistic/quotes` doesn't allow template literals that have no `${}`, so these are now plain strings. Strings that contain `"` use single quotes, which the rule's `avoidEscape` option allows, so no `"` needs escaping. That covers `DISCORD_SVG` and `FRIEND_SVG` in `toastTemplate.ts`, and the `findByProps("jumpToMessage")` line of the jump-to-message script in `native.ts`. The other three lines of that script use double quotes. In the settings panel, the "Title template" and "Body template" labels switched from single to double JSX quotes (`@stylistic/jsx-quotes`).
+- **Two unused `eslint-disable-next-line no-console` comments removed** — in `logDiag` and `logErr`. Vencord's config doesn't enable `no-console`, so they disabled nothing.
+- **`buildGroupHtml` spacing** — removed the extra space that aligned `const hover  =` with the two lines above it (`@stylistic/no-multi-spaces`).
+
+### Bundle checklist (this release)
+- `index.tsx` — `@utils/types` imports merged and sorted before `@webpack`; two JSX labels double-quoted
+- `native.ts` — `electron` imports merged with inline `type`; unused `DISCORD_SVG` import and two unused `no-console` directives removed; `hover` unpadded; jump-to-message script strings re-quoted
+- `toastTemplate.ts` — `DISCORD_SVG` and `FRIEND_SVG` switched from backticks to single quotes
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump
+
 ## v0.4.4 — 2026-11-17
 
 A type-only patch: the plugin now type-checks with 0 errors against the installed Vencord version. The settings panel renders exactly as before.
