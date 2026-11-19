@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.6 — 2026-11-18
+
+Compatibility with Vencord v1.15, plus a fix for "Mute notification sound", which had silently stopped working after Discord's rspack update. oxlint (which replaced ESLint in Vencord v1.15) and `tsc` both report 0 for the plugin.
+
+### Fixed
+
+- **"Mute notification sound" did nothing** — after Discord's 2026-11 rspack update, the sound patch on the `"NotificationStore"` module stopped matching. The ping played even with the toggle on, and Vencord logged `Patch by NotificationsPlus had no effect (Module id is 534765)` in `renderer_js.log`. The old match, `/sound:(\i\?\i:void 0,volume:\i,onClick)/`, ran past `volume:` into code that rspack changed. It is now `/sound:(\i\?\i:void 0,volume:)/`, identical to the fix upstream made to onePingPerDM in `cc5b5a61` ("Fix all plugins for new rspack update"). The replace is unchanged and produces the same code as before: `$1` still carries Discord's own sound choice, and everything after `volume:` is left as it was. The comment above the patch now records `cc5b5a61`, what the log line means, and that onePingPerDM conflicts with this patch, because both rewrite the same `sound:` text.
+
+### Changed
+
+- **Vencord v1.15 compatibility** — v1.15 removed `Forms` and `Button` from `@webpack/common`. The settings panel now imports `Heading`, `Paragraph` and `Button` from `@components/Heading`, `@components/Paragraph` and `@components/Button`. The 3 section titles moved from `Forms.FormTitle` to `Heading`, and the `Cell` label plus 5 descriptions moved from `Forms.FormText` to `Paragraph`. The "Send test notification" button now uses the `@components` `Button`. Props and inline styles are unchanged.
+- **Dead code removed from `native.ts`** — `darkenHex()` and the `hover` constant in `buildGroupHtml()` were declared but never used, since the group window sets its hover colours in its own CSS. oxlint's `no-unused-vars` reported them; ESLint never did.
+- **README: build with `pnpm build`** — this reverses v0.4.4's advice. A standalone build gets Vencord's HTTP updater, which downloads the official release over `dist/` on the next Vencord update and deletes every userplugin. The Install section now uses `pnpm build` and `pnpm inject --branch stable`, explains why, and mentions pnpm 12.15.0 and the in-app Updater. The Sound suppression section explains the `"NotificationStore"` anchor, the "had no effect" log line, and the onePingPerDM conflict.
+
+### Bundle checklist (this release)
+- `index.tsx` — `Heading`, `Paragraph` and `Button` from `@components`; `Forms` and `Button` dropped from the `@webpack/common` import; sound-patch match shortened and its comment updated
+- `native.ts` — unused `darkenHex()` and `hover` removed
+- `CHANGELOG.md` — this entry
+- `README.md` — version bump, build and inject instructions, sound-suppression note
+
 ## v0.4.5 — 2026-11-17
 
 A lint-only patch: the plugin now passes Vencord's ESLint config with 0 errors and 0 warnings, down from 14 errors and 2 warnings, and still type-checks with 0 errors. Behaviour is unchanged. Compiled with esbuild, `native.ts` and `toastTemplate.ts` produce output identical to v0.4.4, and all 9 `toastTemplate.ts` exports are byte-identical: the template HTML, the preload source, both SVGs and the dimension constants. `index.tsx` compiles to the same 56 statements, with two imports in a different order. Neither is a side-effect import, and both are Vencord core modules that load before any plugin.

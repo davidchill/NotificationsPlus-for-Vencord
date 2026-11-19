@@ -234,12 +234,6 @@ function hexToRgb(hex: string): [number, number, number] {
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-function darkenHex(hex: string, factor = 0.78): string {
-    const [r, g, b] = hexToRgb(hex);
-    const d = (c: number) => Math.round(c * factor).toString(16).padStart(2, "0");
-    return `#${d(r)}${d(g)}${d(b)}`;
-}
-
 function escapeHtml(s: string) {
     return s
         .replace(/&/g, "&amp;")
@@ -557,7 +551,6 @@ export function getDisplays(_: IpcMainInvokeEvent): DisplayInfo[] {
 function buildGroupHtml(count: number, isDM: boolean, font: string, channelSize: number): string {
     const accent = isDM ? "#23a55a" : "#5865f2";
     const border = isDM ? "rgba(35,165,90,.35)" : "rgba(88,101,242,.35)";
-    const hover = isDM ? "rgba(35,165,90,.12)" : "rgba(88,101,242,.12)";
     const plural = count !== 1 ? "s" : "";
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}

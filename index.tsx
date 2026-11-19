@@ -8,11 +8,14 @@ import "./style.css";
 
 import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
+import { Button } from "@components/Button";
 import { Divider } from "@components/Divider";
+import { Heading } from "@components/Heading";
+import { Paragraph } from "@components/Paragraph";
 import { Switch } from "@components/Switch";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findStoreLazy } from "@webpack";
-import { Button, FluxDispatcher, Forms, React, Select, TextInput } from "@webpack/common";
+import { FluxDispatcher, React, Select, TextInput } from "@webpack/common";
 
 import type { DisplayInfo, ToastConfig, ToastOptions } from "./native";
 
@@ -303,9 +306,9 @@ const FONT_OPTIONS = [
 function Cell({ label, children, full }: { label: string; children: React.ReactNode; full?: boolean; }) {
     return (
         <div style={{ gridColumn: full ? "1 / -1" : undefined }}>
-            <Forms.FormText style={{ marginBottom: 6, fontSize: 12, color: "var(--text-muted)" }}>
+            <Paragraph style={{ marginBottom: 6, fontSize: 12, color: "var(--text-muted)" }}>
                 {label}
-            </Forms.FormText>
+            </Paragraph>
             {children}
         </div>
     );
@@ -406,7 +409,7 @@ function SettingsPanel() {
 
             {/* ── IN-APP OVERLAY ── */}
             <div>
-                <Forms.FormTitle tag="h4">In-App Overlay</Forms.FormTitle>
+                <Heading tag="h4">In-App Overlay</Heading>
                 <Grid>
                     <Cell label="Corner">
                         <Select
@@ -435,13 +438,13 @@ function SettingsPanel() {
 
             {/* ── CUSTOM TOAST ── */}
             <div>
-                <Forms.FormTitle tag="h4" style={{ marginBottom: 8 }}>Custom Toast Notifications</Forms.FormTitle>
+                <Heading tag="h4" style={{ marginBottom: 8 }}>Custom Toast Notifications</Heading>
                 <div className="np-toggle-row">
                     <Switch
                         checked={s.useCustomNativeToast}
                         onChange={v => set("useCustomNativeToast", v, () => v ? applyToastPatch() : removeToastPatch())}
                     />
-                    <Forms.FormText>Replace OS notifications with a custom positionable window</Forms.FormText>
+                    <Paragraph>Replace OS notifications with a custom positionable window</Paragraph>
                 </div>
 
                 <SubHeader>Server Message Placement</SubHeader>
@@ -525,10 +528,10 @@ function SettingsPanel() {
                             min={0}
                             onChange={v => set("toastCoalesceWindowMs", Math.max(0, Math.min(2000, v)), updateToast)}
                         />
-                        <Forms.FormText style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
+                        <Paragraph style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
                             Successive messages in the same channel within this window merge into one toast ("Alice (3 new)").
                             Every toast pays this much latency before showing. Set to 0 to show each message immediately.
-                        </Forms.FormText>
+                        </Paragraph>
                     </Cell>
                     <Cell label="Pool minimum size (1–8)" full>
                         <NumInput
@@ -536,12 +539,12 @@ function SettingsPanel() {
                             min={1}
                             onChange={v => set("toastPoolMin", Math.max(1, Math.min(8, v)), updateToast)}
                         />
-                        <Forms.FormText style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
+                        <Paragraph style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
                             Floor for the warm BrowserWindow pool. Each warm window costs ~15–40 MB of RAM at idle but
                             saves a ~50–150 ms cold-create on the first toast after a quiet period. Default 4. Lower to
                             2 if you want to reclaim idle RAM and don't mind a brief stall on the first toast after
                             launch; raise to 6–8 if you frequently get bursts of many simultaneous notifications.
-                        </Forms.FormText>
+                        </Paragraph>
                     </Cell>
                 </Grid>
 
@@ -631,7 +634,7 @@ function SettingsPanel() {
                         checked={s.friendHighlightEnabled}
                         onChange={v => set("friendHighlightEnabled", v, updateToast)}
                     />
-                    <Forms.FormText>Visually identify messages from people on your friends list</Forms.FormText>
+                    <Paragraph>Visually identify messages from people on your friends list</Paragraph>
                 </div>
                 {s.friendHighlightEnabled && (
                     <Grid>
@@ -688,16 +691,16 @@ function SettingsPanel() {
             <Divider />
 
             <div>
-                <Forms.FormTitle tag="h4">Diagnostics</Forms.FormTitle>
+                <Heading tag="h4">Diagnostics</Heading>
                 <div className="np-toggle-row">
                     <Switch
                         checked={s.npDebug}
                         onChange={v => set("npDebug", v, () => Native.setDebug(v))}
                     />
-                    <Forms.FormText>
+                    <Paragraph>
                         Log internal errors to Discord's devtools console (Ctrl+Shift+I → Console tab).
                         Useful when reporting bugs or diagnosing why a font / icon / notification isn't behaving.
-                    </Forms.FormText>
+                    </Paragraph>
                 </div>
             </div>
 
@@ -1003,9 +1006,15 @@ export default definePlugin({
             // module change broke it (patch silently stopped applying, so the ping kept
             // playing while the toggle still read as enabled). Upstream Vencord moved
             // onePingPerDM to the "NotificationStore" anchor in commit a3250ea; mirror that.
+            //
+            // Discord's 2026-11 rspack update broke the match the same way. Upstream shortened
+            // it to stop at "volume:" in cc5b5a61 ("Fix all plugins for new rspack update"), so
+            // this mirrors that too. If renderer_js.log shows "Patch by NotificationsPlus had no
+            // effect", re-sync with src/plugins/onePingPerDM. Enabling onePingPerDM alongside
+            // this would conflict, since both rewrite the same "sound:" text.
             find: '"NotificationStore"',
             replacement: {
-                match: /sound:(\i\?\i:void 0,volume:\i,onClick)/,
+                match: /sound:(\i\?\i:void 0,volume:)/,
                 replace: "sound:$self.settings.store.suppressNotificationSound?void 0:$1",
             },
         },

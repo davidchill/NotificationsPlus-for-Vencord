@@ -4,7 +4,7 @@ A Vencord plugin that extends notification positioning for both Vencord's in-app
 
 ## Current version
 
-`0.4.5`
+`0.4.6`
 
 ## Install
 
@@ -15,20 +15,22 @@ NotificationsPlus is a **userplugin**. Userplugins are compiled into the Vencord
 
    ```
    pnpm i
-   pnpm buildStandalone
+   pnpm build
    ```
 
-   Use `buildStandalone`, not `build`. A plain `pnpm build` produces a patcher that silently fails to load with current Discord versions.
+   Use `pnpm build`, not `pnpm buildStandalone`. A standalone build gets Vencord's HTTP updater. The next time Vencord publishes an update, that updater downloads the official release over `dist/`, which deletes every userplugin. A plain build gets the git updater instead: it runs `git pull` in your clone and rebuilds, so userplugins survive. Vencord v1.15 requires pnpm 12.15.0 (`npm install -g pnpm@12.15.0`).
 
 3. Fully quit Discord — tray icon -> Quit, not just closing the window — then patch it:
 
    ```
-   pnpm inject
+   pnpm inject --branch stable
    ```
+
+   Use `ptb` or `canary` instead of `stable` for those Discord clients.
 
 4. Relaunch Discord. The plugin appears in Vencord Settings -> Plugins as **NotificationsPlus**.
 
-After editing plugin source, re-run `pnpm buildStandalone` and fully restart Discord. `pnpm inject` only needs to be run once.
+After editing plugin source, re-run `pnpm build` and fully restart Discord. To update Vencord itself, use Discord -> Settings -> Vencord -> Updater, which pulls and rebuilds your clone and keeps this plugin. `pnpm inject` only needs re-running after a Discord reinstall or after the standalone installer has been run.
 
 ### Important: do not use the standalone Vencord Installer
 
@@ -217,7 +219,7 @@ Each pool window pre-loads a single static template page (`TEMPLATE_HTML`) at cr
 **Click-to-navigate:** A toast never closes its own window. Its `onclick` navigates to `vc-np://click` when `redirectOnClick` is on and to `vc-np://dismiss` otherwise; right-click always navigates to `vc-np://dismiss`, and the Open Link button to `vc-np://open-link/<encoded-url>`. Each window has one persistent `will-navigate` handler that cancels **every** navigation, since the template page must never be replaced on a window that will be reused, and dispatches the `vc-np://` actions: each one retires the toast, then jumps to the message or opens the link as appropriate. A navigation that arrives after its toast has already ended is ignored. `window.open` is denied outright.
 
 ### Sound suppression
-A webpack patch on Discord's notification dispatch module sets the `sound` property to `undefined` when `suppressNotificationSound` is enabled. This mutes the ping audio before it reaches Discord's audio system, with no effect on the visual notification path.
+A webpack patch on Discord's notification dispatch module sets the `sound` property to `undefined` when `suppressNotificationSound` is enabled. This mutes the ping audio before it reaches Discord's audio system, with no effect on the visual notification path. The patch finds the module by its `"NotificationStore"` string and uses the same `sound:` match as Vencord's built-in onePingPerDM plugin. When a Discord update breaks it, Vencord logs `Patch by NotificationsPlus had no effect` in `renderer_js.log` (`%AppData%\discord\logs\`), and the fix is to copy onePingPerDM's current match. Don't enable onePingPerDM at the same time: both patches rewrite the same `sound:` text, so whichever applies second can't match.
 
 ## Files
 
